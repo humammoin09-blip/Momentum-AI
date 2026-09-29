@@ -5,6 +5,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { IconClose } from "@/components/icons";
 import { Navbar } from "@/components/layout/Navbar";
 import { Sidebar } from "@/components/layout/Sidebar";
+import { ConsistencyHeatmap } from "@/components/ConsistencyHeatmap";
 
 type DashboardShellProps = {
   children: React.ReactNode;
@@ -12,7 +13,7 @@ type DashboardShellProps = {
 };
 
 export function DashboardShell({ children, onStartFocus }: DashboardShellProps) {
-  const [activeId, setActiveId] = useState("overview");
+  const [activeId, setActiveId] = useState("dashboard");
   const [mobileOpen, setMobileOpen] = useState(false);
 
   return (
@@ -70,7 +71,18 @@ export function DashboardShell({ children, onStartFocus }: DashboardShellProps) 
 
       <div className="relative flex min-h-screen flex-1 flex-col lg:pl-64">
         <Navbar onMenuClick={() => setMobileOpen(true)} onStartFocus={onStartFocus} />
-        {children}
+        
+        {/* Dashboard View - Hidden instead of unmounted so timer keeps running */}
+        <div className={activeId === "analytics" ? "hidden" : "block"}>
+          {children}
+        </div>
+
+        {/* Analytics View */}
+        {activeId === "analytics" && (
+          <main className="relative mx-auto w-full max-w-6xl flex-1 space-y-6 px-4 py-6 sm:px-6 lg:px-8">
+            <ConsistencyHeatmap />
+          </main>
+        )}
       </div>
     </div>
   );

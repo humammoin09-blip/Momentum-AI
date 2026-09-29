@@ -6,6 +6,8 @@ import { IconPause, IconPlay, IconReset } from "@/components/icons";
 import { fadeIn } from "@/lib/motion";
 
 const FOCUS_SECONDS = 25 * 60;
+const STORAGE_KEY_END_TIME = "flowstate_timer_end_time";
+const STORAGE_KEY_RUNNING = "flowstate_timer_running";
 
 function pad(n: number) {
   return String(n).padStart(2, "0");
@@ -15,23 +17,88 @@ type FocusTimerProps = {
   startOnMount?: boolean;
 };
 
-export function FocusTimer({ startOnMount = false }: FocusTimerProps) {
-  const [remaining, setRemaining] = useState(FOCUS_SECONDS);
-  const [running, setRunning] = useState(startOnMount);
+const STORAGE_KEY_REMAINING = "flowstate_timer_remaining";
 
+export function FocusTimer({ startOnMount = false }: FocusTimerProps) {
+  const [remaining, setRemaining] = useState<number>(FOCUS_SECONDS);
+  const [running, setRunning] = useState<boolean>(startOnMount);
+
+  // Initialize state from localStorage on mount & handle tick
   useEffect(() => {
-    if (!running) return;
-    const id = window.setInterval(() => {
-      setRemaining((prev) => {
-        if (prev <= 1) {
+    const syncState = () => {
+      const savedRunning = localStorage.getItem(STORAGE_KEY_RUNNING) === "true";
+      const savedEndTime = localStorage.getItem(STORAGE_KEY_END_TIME);
+      const savedRemaining = localStorage.getItem(STORAGE_KEY_REMAINING);
+
+      if (savedRunning && savedEndTime) {
+        const now = Date.now();
+        const left = Math.max(0, Math.ceil((Number(savedEndTime) - now) / 1000));
+        if (left > 0) {
+          setRemaining(left);
+          setRunning(true);
+        } else {
+          setRemaining(0);
           setRunning(false);
-          return 0;
+          localStorage.setItem(STORAGE_KEY_RUNNING, "false");
+          localStorage.removeItem(STORAGE_KEY_END_TIME);
+          localStorage.setItem(STORAGE_KEY_REMAINING, String(FOCUS_SECONDS));
         }
-        return prev - 1;
-      });
-    }, 1000);
-    return () => window.clearInterval(id);
-  }, [running]);
+      } else if (savedRemaining !== null) {
+        setRemaining(Math.max(0, Number(savedRemaining)));
+        setRunning(false);
+      } else if (startOnMount) {
+        const endTime = Date.now() + FOCUS_SECONDS * 1000;
+        localStorage.setItem(STORAGE_KEY_END_TIME, String(endTime));
+        localStorage.setItem(STORAGE_KEY_RUNNING, "true");
+        setRemaining(FOCUS_SECONDS);
+        setRunning(true);
+      }
+    };
+
+    syncState();
+    const interval = window.setInterval(syncState, 1000);
+    window.addEventListener("focus", syncState);
+    window.addEventListener("visibilitychange", syncState);
+
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener("focus", syncState);
+      window.removeEventListener("visibilitychange", syncState);
+    };
+  }, [startOnMount]);
+
+  const toggleTimer = () => {
+    if (running) {
+      // Pause
+      const savedEndTime = localStorage.getItem(STORAGE_KEY_END_TIME);
+      let left = remaining;
+      if (savedEndTime) {
+        left = Math.max(0, Math.ceil((Number(savedEndTime) - Date.now()) / 1000));
+      }
+      setRunning(false);
+      setRemaining(left);
+      localStorage.setItem(STORAGE_KEY_RUNNING, "false");
+      localStorage.removeItem(STORAGE_KEY_END_TIME);
+      localStorage.setItem(STORAGE_KEY_REMAINING, String(left));
+    } else {
+      // Start / Resume
+      const timeToUse = remaining <= 0 ? FOCUS_SECONDS : remaining;
+      const endTime = Date.now() + timeToUse * 1000;
+      localStorage.setItem(STORAGE_KEY_END_TIME, String(endTime));
+      localStorage.setItem(STORAGE_KEY_RUNNING, "true");
+      localStorage.removeItem(STORAGE_KEY_REMAINING);
+      if (remaining <= 0) setRemaining(FOCUS_SECONDS);
+      setRunning(true);
+    }
+  };
+
+  const resetTimer = () => {
+    setRunning(false);
+    setRemaining(FOCUS_SECONDS);
+    localStorage.setItem(STORAGE_KEY_RUNNING, "false");
+    localStorage.removeItem(STORAGE_KEY_END_TIME);
+    localStorage.setItem(STORAGE_KEY_REMAINING, String(FOCUS_SECONDS));
+  };
 
   const minutes = Math.floor(remaining / 60);
   const seconds = remaining % 60;
@@ -96,14 +163,7 @@ export function FocusTimer({ startOnMount = false }: FocusTimerProps) {
             <motion.button
               type="button"
               whileTap={{ scale: 0.96 }}
-              onClick={() => {
-                if (running) {
-                  setRunning(false);
-                  return;
-                }
-                if (remaining === 0) setRemaining(FOCUS_SECONDS);
-                setRunning(true);
-              }}
+              onClick={toggleTimer}
               className="inline-flex h-11 items-center gap-2 rounded-xl bg-emerald-400 px-4 text-sm font-semibold text-zinc-950 shadow-[0_0_20px_rgba(52,211,153,0.35)]"
             >
               {running ? <IconPause className="h-4 w-4" /> : <IconPlay className="h-4 w-4" />}
@@ -112,10 +172,7 @@ export function FocusTimer({ startOnMount = false }: FocusTimerProps) {
             <motion.button
               type="button"
               whileTap={{ scale: 0.96 }}
-              onClick={() => {
-                setRunning(false);
-                setRemaining(FOCUS_SECONDS);
-              }}
+              onClick={resetTimer}
               className="inline-flex h-11 items-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-4 text-sm text-zinc-200 hover:border-emerald-400/30"
             >
               <IconReset className="h-4 w-4" />

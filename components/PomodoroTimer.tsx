@@ -1,6 +1,7 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import { supabase } from "@/lib/supabase";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Play,
@@ -25,6 +26,12 @@ interface PomodoroTimerProps {
   onFocusComplete?: () => void;
 }
 
+const STORAGE_KEY_TARGET_END_TIME = "flowstate_pomodoro_target_end_time";
+const STORAGE_KEY_RUNNING = "flowstate_pomodoro_running";
+const STORAGE_KEY_MODE = "flowstate_pomodoro_mode";
+const STORAGE_KEY_REMAINING = "flowstate_pomodoro_remaining";
+const STORAGE_KEY_COMPLETED_SESSIONS = "flowstate_pomodoro_completed_sessions";
+
 export function PomodoroTimer({
   timerActive,
   setTimerActive,
@@ -44,53 +51,254 @@ export function PomodoroTimer({
   const [selectedSound, setSelectedSound] = useState<string>("Rain");
   const [soundPlaying, setSoundPlaying] = useState(false);
 
-  // Sync parent timer time text
-  useEffect(() => {
-    const minutes = Math.floor(timeLeft / 60);
-    const seconds = timeLeft % 60;
-    const formatted = `${minutes.toString().padStart(2, "0")}:${seconds
-      .toString()
-      .padStart(2, "0")}`;
-    setTimerTime(formatted);
-  }, [timeLeft, setTimerTime]);
+  const isCompletingRef = useRef(false);
+  const notifiedTimesRef = useRef<Set<number>>(new Set());
 
-  // Timer Countdown Logic
-  useEffect(() => {
-    let interval: NodeJS.Timeout | null = null;
-    if (timerActive && timeLeft > 0) {
-      interval = setInterval(() => {
-        setTimeLeft((prev) => prev - 1);
-      }, 1000);
-    } else if (timeLeft === 0 && timerActive) {
-      setTimerActive(false);
-      if (mode === "focus") {
-        setCompletedSessions((prev) => Math.min(prev + 1, 4));
-        if (onFocusComplete) onFocusComplete();
-      }
+  const formatTime = (seconds: number) => {
+    const m = Math.floor(seconds / 60);
+    const s = seconds % 60;
+    return `${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
+  };
+
+  const handleTimerCompletion = useCallback((currentMode: TimerMode) => {
+    if (isCompletingRef.current) return;
+    isCompletingRef.current = true;
+
+    setTimerActive(false);
+    localStorage.setItem(STORAGE_KEY_RUNNING, "false");
+    localStorage.removeItem(STORAGE_KEY_TARGET_END_TIME);
+
+    const defaultDuration = modeDurations[currentMode];
+    localStorage.setItem(STORAGE_KEY_REMAINING, String(defaultDuration));
+    setTimeLeft(defaultDuration);
+    setTimerTime(formatTime(defaultDuration));
+
+    if (typeof window !== "undefined" && "Notification" in window && Notification.permission === "granted") {
+      new Notification("FlowState Focus Complete! 🎯", {
+        body: "Great job! Your focus session is complete.",
+        icon: "/favicon.ico",
+      });
     }
-    return () => {
-      if (interval) clearInterval(interval);
+
+    if (currentMode === "focus") {
+      setCompletedSessions((prev) => {
+        const next = Math.min(prev + 1, 4);
+        localStorage.setItem(STORAGE_KEY_COMPLETED_SESSIONS, String(next));
+        return next;
+      });
+
+      supabase
+        .from("focus_sessions")
+        .insert([
+          {
+            duration_minutes: 25,
+            mode: "focus",
+          },
+        ])
+        .then(({ error }) => {
+          if (error) console.error("Error saving focus session:", error);
+        });
+
+      if (onFocusComplete) onFocusComplete();
+    }
+
+    setTimeout(() => {
+      isCompletingRef.current = false;
+    }, 1000);
+  }, [modeDurations, onFocusComplete, setTimerActive, setTimerTime]);
+
+  const syncStateFromStorage = useCallback(() => {
+    if (typeof window === "undefined") return;
+
+    const savedMode = (localStorage.getItem(STORAGE_KEY_MODE) as TimerMode) || "focus";
+    const savedRunning = localStorage.getItem(STORAGE_KEY_RUNNING) === "true";
+    const savedTargetEndTime = localStorage.getItem(STORAGE_KEY_TARGET_END_TIME);
+    const savedRemaining = localStorage.getItem(STORAGE_KEY_REMAINING);
+    const savedCompleted = localStorage.getItem(STORAGE_KEY_COMPLETED_SESSIONS);
+    const savedSound = localStorage.getItem("flowstate_active_soundscape");
+    const savedSoundPlaying = localStorage.getItem("flowstate_soundscape_playing") === "true";
+
+    if (savedSound) {
+      setSelectedSound(savedSound);
+      setSoundPlaying(savedSoundPlaying);
+    }
+
+    setMode(savedMode);
+    if (savedCompleted) {
+      setCompletedSessions(parseInt(savedCompleted, 10));
+    }
+
+    if (savedRunning && savedTargetEndTime) {
+      const targetEndTime = Number(savedTargetEndTime);
+      const now = Date.now();
+      const left = Math.max(0, Math.ceil((targetEndTime - now) / 1000));
+      if (left > 0) {
+        setTimeLeft(left);
+        setTimerActive(true);
+        setTimerTime(formatTime(left));
+      } else {
+        handleTimerCompletion(savedMode);
+      }
+    } else if (savedRemaining !== null) {
+      const remaining = Math.max(0, Number(savedRemaining));
+      setTimeLeft(remaining);
+      setTimerActive(false);
+      setTimerTime(formatTime(remaining));
+    } else {
+      const defaultTime = modeDurations[savedMode];
+      setTimeLeft(defaultTime);
+      setTimerActive(false);
+      setTimerTime(formatTime(defaultTime));
+    }
+  }, [handleTimerCompletion, modeDurations, setTimerActive, setTimerTime]);
+
+  useEffect(() => {
+    syncStateFromStorage();
+  }, [syncStateFromStorage]);
+
+  // Sync soundscape selection with external events (e.g. sidebar player)
+  useEffect(() => {
+    const handleSoundChange = (e: Event) => {
+      const customEvent = e as CustomEvent<{ name: string; playing: boolean }>;
+      if (customEvent.detail && customEvent.detail.name) {
+        setSelectedSound(customEvent.detail.name);
+        setSoundPlaying(customEvent.detail.playing);
+      }
     };
-  }, [timerActive, timeLeft, mode, setTimerActive, onFocusComplete]);
+
+    window.addEventListener("flowstate_sound_change", handleSoundChange);
+    return () => {
+      window.removeEventListener("flowstate_sound_change", handleSoundChange);
+    };
+  }, []);
+
+  const handleSoundSelect = (soundName: string) => {
+    setSelectedSound(soundName);
+    const playing = soundName !== "Silent";
+    setSoundPlaying(playing);
+
+    if (typeof window !== "undefined") {
+      localStorage.setItem("flowstate_active_soundscape", soundName);
+      localStorage.setItem("flowstate_soundscape_playing", String(playing));
+      window.dispatchEvent(
+        new CustomEvent("flowstate_sound_change", {
+          detail: { name: soundName, playing },
+        })
+      );
+    }
+  };
+
+  useEffect(() => {
+    const tick = () => {
+      const savedRunning = localStorage.getItem(STORAGE_KEY_RUNNING) === "true";
+      const savedTargetEndTime = localStorage.getItem(STORAGE_KEY_TARGET_END_TIME);
+      const savedMode = (localStorage.getItem(STORAGE_KEY_MODE) as TimerMode) || "focus";
+
+      if (savedRunning && savedTargetEndTime) {
+        const targetEndTime = Number(savedTargetEndTime);
+        const now = Date.now();
+        const left = Math.max(0, Math.ceil((targetEndTime - now) / 1000));
+
+        // Low time notification trigger (2 mins = 120s, 1 min = 60s)
+        if (left === 120 || left === 60) {
+          if (!notifiedTimesRef.current.has(left)) {
+            notifiedTimesRef.current.add(left);
+            if (typeof window !== "undefined" && "Notification" in window && Notification.permission === "granted") {
+              new Notification("FlowState Focus Alert ⚡", {
+                body: `Focus session ending soon! ${Math.ceil(left / 60)} minute${left > 60 ? "s" : ""} remaining.`,
+                icon: "/favicon.ico",
+              });
+            }
+          }
+        }
+
+        if (left > 120) {
+          notifiedTimesRef.current.clear();
+        }
+
+        if (left <= 0) {
+          handleTimerCompletion(savedMode);
+        } else {
+          setTimeLeft(left);
+          setTimerActive(true);
+          setTimerTime(formatTime(left));
+        }
+      }
+    };
+
+    const interval = setInterval(tick, 1000);
+    window.addEventListener("focus", tick);
+    window.addEventListener("visibilitychange", tick);
+
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener("focus", tick);
+      window.removeEventListener("visibilitychange", tick);
+    };
+  }, [handleTimerCompletion, setTimerActive, setTimerTime]);
+
+  const toggleTimer = () => {
+    const savedRunning = localStorage.getItem(STORAGE_KEY_RUNNING) === "true";
+
+    if (savedRunning) {
+      // Pause
+      const savedTargetEndTime = localStorage.getItem(STORAGE_KEY_TARGET_END_TIME);
+      let left = timeLeft;
+      if (savedTargetEndTime) {
+        left = Math.max(0, Math.ceil((Number(savedTargetEndTime) - Date.now()) / 1000));
+      }
+      localStorage.setItem(STORAGE_KEY_RUNNING, "false");
+      localStorage.removeItem(STORAGE_KEY_TARGET_END_TIME);
+      localStorage.setItem(STORAGE_KEY_REMAINING, String(left));
+
+      setTimeLeft(left);
+      setTimerActive(false);
+      setTimerTime(formatTime(left));
+    } else {
+      // Start / Resume
+      const timeToUse = timeLeft <= 0 ? modeDurations[mode] : timeLeft;
+      const targetEndTime = Date.now() + timeToUse * 1000;
+
+      localStorage.setItem(STORAGE_KEY_TARGET_END_TIME, String(targetEndTime));
+      localStorage.setItem(STORAGE_KEY_RUNNING, "true");
+      localStorage.setItem(STORAGE_KEY_MODE, mode);
+      localStorage.removeItem(STORAGE_KEY_REMAINING);
+
+      setTimeLeft(timeToUse);
+      setTimerActive(true);
+      setTimerTime(formatTime(timeToUse));
+    }
+  };
 
   const handleModeChange = (newMode: TimerMode) => {
     setMode(newMode);
+    const duration = modeDurations[newMode];
+
+    localStorage.setItem(STORAGE_KEY_MODE, newMode);
+    localStorage.setItem(STORAGE_KEY_RUNNING, "false");
+    localStorage.removeItem(STORAGE_KEY_TARGET_END_TIME);
+    localStorage.setItem(STORAGE_KEY_REMAINING, String(duration));
+
+    setTimeLeft(duration);
     setTimerActive(false);
-    setTimeLeft(modeDurations[newMode]);
+    setTimerTime(formatTime(duration));
   };
 
   const handleReset = () => {
+    const duration = modeDurations[mode];
+
+    localStorage.setItem(STORAGE_KEY_RUNNING, "false");
+    localStorage.removeItem(STORAGE_KEY_TARGET_END_TIME);
+    localStorage.setItem(STORAGE_KEY_REMAINING, String(duration));
+
+    setTimeLeft(duration);
     setTimerActive(false);
-    setTimeLeft(modeDurations[mode]);
+    setTimerTime(formatTime(duration));
   };
 
   const handleSkip = () => {
-    setTimerActive(false);
-    if (mode === "focus") {
-      handleModeChange("shortBreak");
-    } else {
-      handleModeChange("focus");
-    }
+    const nextMode: TimerMode = mode === "focus" ? "shortBreak" : "focus";
+    handleModeChange(nextMode);
   };
 
   const totalModeDuration = modeDurations[mode];
@@ -276,7 +484,7 @@ export function PomodoroTimer({
           <motion.button
             whileHover={{ scale: 1.04 }}
             whileTap={{ scale: 0.96 }}
-            onClick={() => setTimerActive(!timerActive)}
+            onClick={toggleTimer}
             className={`flex items-center justify-center gap-2 px-8 py-3 rounded-2xl font-extrabold text-sm text-slate-950 transition-all shadow-xl ${
               timerActive
                 ? "bg-gradient-to-r from-amber-400 to-amber-300 shadow-[0_0_20px_rgba(245,158,11,0.4)]"
@@ -316,12 +524,9 @@ export function PomodoroTimer({
             {sounds.map((s) => (
               <button
                 key={s.name}
-                onClick={() => {
-                  setSelectedSound(s.name);
-                  setSoundPlaying(s.name !== "Silent");
-                }}
+                onClick={() => handleSoundSelect(s.name)}
                 className={`px-2 py-1 rounded-lg text-[10px] font-semibold transition-all ${
-                  selectedSound === s.name
+                  selectedSound === s.name && soundPlaying
                     ? "bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 shadow-[0_0_8px_rgba(99,102,241,0.3)]"
                     : "bg-slate-900/40 text-slate-400 hover:bg-slate-800"
                 }`}

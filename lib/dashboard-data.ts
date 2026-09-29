@@ -1,3 +1,5 @@
+import { supabase } from "@/lib/supabase";
+
 export type NavItem = {
   id: string;
   label: string;

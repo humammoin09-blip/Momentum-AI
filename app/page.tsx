@@ -1,12 +1,12 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Sidebar, NavTab } from "@/components/Sidebar";
 import { Header } from "@/components/Header";
 import { StatCards } from "@/components/StatCards";
 import { PomodoroTimer } from "@/components/PomodoroTimer";
-import { TaskList, Task } from "@/components/TaskList";
+import TaskList, { Task } from "@/components/TaskList";
 import { ConsistencyHeatmap } from "@/components/ConsistencyHeatmap";
 import { Sparkles, Flame, Zap, Shield, ArrowRight, BarChart3, Timer, CheckSquare } from "lucide-react";
 
@@ -16,6 +16,54 @@ export default function FlowStateDashboard() {
   const [timerTime, setTimerTime] = useState<string>("25:00");
   const [focusHours, setFocusHours] = useState<number>(5.4);
   const [streakDays, setStreakDays] = useState<number>(14);
+
+  // Request browser notification permissions on app load
+  useEffect(() => {
+    if (typeof window !== "undefined" && "Notification" in window && Notification.permission !== "granted") {
+      Notification.requestPermission();
+    }
+  }, []);
+
+  // Background timer sync to keep Header and Sidebar updated when on other tabs or returning from OS focus
+  useEffect(() => {
+    const syncGlobalTimer = () => {
+      if (typeof window === "undefined") return;
+
+      const running = localStorage.getItem("flowstate_pomodoro_running") === "true";
+      const targetEndTime = localStorage.getItem("flowstate_pomodoro_target_end_time");
+      const savedRemaining = localStorage.getItem("flowstate_pomodoro_remaining");
+
+      if (running && targetEndTime) {
+        const left = Math.max(0, Math.ceil((Number(targetEndTime) - Date.now()) / 1000));
+        if (left > 0) {
+          setTimerActive(true);
+          const m = Math.floor(left / 60);
+          const s = left % 60;
+          setTimerTime(`${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`);
+        } else {
+          setTimerActive(false);
+          setTimerTime("00:00");
+        }
+      } else if (savedRemaining !== null) {
+        setTimerActive(false);
+        const rem = Math.max(0, Number(savedRemaining));
+        const m = Math.floor(rem / 60);
+        const s = rem % 60;
+        setTimerTime(`${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`);
+      }
+    };
+
+    syncGlobalTimer();
+    const interval = setInterval(syncGlobalTimer, 1000);
+    window.addEventListener("focus", syncGlobalTimer);
+    window.addEventListener("visibilitychange", syncGlobalTimer);
+
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener("focus", syncGlobalTimer);
+      window.removeEventListener("visibilitychange", syncGlobalTimer);
+    };
+  }, []);
 
   // Initial Daily MIT Tasks
   const [tasks, setTasks] = useState<Task[]>([

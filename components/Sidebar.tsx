@@ -1,5 +1,6 @@
 "use client";
 
+import SoundscapePlayer from "./SoundscapePlayer";
 import React, { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -35,7 +36,6 @@ export function Sidebar({
   timerTime,
 }: SidebarProps) {
   const [isCollapsed, setIsCollapsed] = useState(false);
-  const [soundActive, setSoundActive] = useState(false);
 
   const navItems = [
     {
@@ -68,11 +68,7 @@ export function Sidebar({
       id: "analytics" as NavTab,
       label: "Analytics",
       icon: BarChart3,
-      badge: (
-        <span className="text-[9px] font-bold tracking-wider text-amber-400 bg-amber-500/10 px-1.5 py-0.5 rounded uppercase border border-amber-500/20">
-          PRO
-        </span>
-      ),
+      badge: null,
     },
   ];
 
@@ -83,7 +79,6 @@ export function Sidebar({
       transition={{ duration: 0.3, ease: "easeInOut" }}
       className="relative flex flex-col h-screen sticky top-0 z-30 bg-slate-950/80 backdrop-blur-2xl border-r border-white/10 select-none shadow-[4px_0_24px_rgba(0,0,0,0.5)] shrink-0"
     >
-
       {/* Collapse Toggle Button */}
       <button
         onClick={() => setIsCollapsed(!isCollapsed)}
@@ -189,32 +184,10 @@ export function Sidebar({
         })}
       </nav>
 
-      {/* Sound Widget & Live Focus Mode Status */}
+      {/* Soundscape Widget & User Profile Footer */}
       <div className="p-3 border-t border-white/5 space-y-3">
-        {/* Ambient Sound Quick Toggle */}
-        <button
-          onClick={() => setSoundActive(!soundActive)}
-          className={`flex items-center gap-3 w-full p-2.5 rounded-xl border text-xs font-medium transition-all ${
-            soundActive
-              ? "bg-indigo-950/40 border-indigo-500/30 text-indigo-300 shadow-[0_0_15px_rgba(99,102,241,0.2)]"
-              : "bg-slate-900/40 border-white/5 text-slate-400 hover:border-white/10"
-          }`}
-          title="Toggle Deep Focus Rain Audio"
-        >
-          <Headphones
-            className={`w-4 h-4 shrink-0 ${
-              soundActive ? "text-indigo-400 animate-pulse" : "text-slate-400"
-            }`}
-          />
-          {!isCollapsed && (
-            <div className="flex flex-col text-left overflow-hidden">
-              <span className="truncate">Deep Rain Lo-Fi</span>
-              <span className="text-[10px] text-slate-500">
-                {soundActive ? "Playing • 432Hz" : "Paused"}
-              </span>
-            </div>
-          )}
-        </button>
+        {/* Soundscape Player Integration */}
+        {!isCollapsed && <SoundscapePlayer />}
 
         {/* User Mini Profile / Status Card */}
         <div className="relative flex items-center gap-3 p-2.5 rounded-xl bg-slate-900/60 border border-white/10">
