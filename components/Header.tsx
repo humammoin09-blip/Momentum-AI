@@ -18,9 +18,20 @@ import {
 interface HeaderProps {
   timerActive: boolean;
   timerTime: string;
+  userName?: string;
+  userTitle?: string;
+  onOpenProfile?: () => void;
+  userAvatar?: string;
 }
 
-export function Header({ timerActive, timerTime }: HeaderProps) {
+export function Header({
+  timerActive,
+  timerTime,
+  userName = "Alex Vance",
+  userTitle = "Flow Master",
+  onOpenProfile,
+  userAvatar = "🚀",
+}: HeaderProps) {
   const [greeting, setGreeting] = useState("Good Afternoon");
   const [currentDateStr, setCurrentDateStr] = useState("");
   const [showNotifications, setShowNotifications] = useState(false);
@@ -67,6 +78,14 @@ export function Header({ timerActive, timerTime }: HeaderProps) {
     },
   ];
 
+  // Get user initials for avatar fallback
+  const initials = userName
+    .split(" ")
+    .map((n) => n[0])
+    .join("")
+    .toUpperCase()
+    .slice(0, 2);
+
   return (
     <header className="sticky top-0 z-20 w-full px-6 py-4 bg-slate-950/80 backdrop-blur-xl border-b border-white/10 flex flex-wrap items-center justify-between gap-4">
       {/* Left: Greeting Banner & Live Status */}
@@ -74,7 +93,7 @@ export function Header({ timerActive, timerTime }: HeaderProps) {
         <div>
           <div className="flex items-center gap-2">
             <h1 className="text-xl sm:text-2xl font-extrabold tracking-tight text-white flex items-center gap-2">
-              {greeting}, Alex
+              {greeting}, {userName.split(" ")[0]}
               <span className="inline-block animate-bounce text-amber-400">
                 ⚡
               </span>
@@ -170,12 +189,22 @@ export function Header({ timerActive, timerTime }: HeaderProps) {
           </AnimatePresence>
         </div>
 
-        {/* User Profile Avatar Badge */}
-        <div className="flex items-center gap-2.5 pl-2 border-l border-white/10">
-          <div className="relative cursor-pointer group">
-            <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-emerald-400 via-indigo-500 to-purple-500 p-[1.5px] shadow-[0_0_12px_rgba(16,185,129,0.3)] transition-transform group-hover:scale-105">
-              <div className="w-full h-full bg-slate-950 rounded-[10px] flex items-center justify-center text-xs font-bold text-white">
-                AV
+        {/* User Profile Avatar Badge - Clickable to open ProfileModal */}
+        <div 
+          onClick={onOpenProfile}
+          className="flex items-center gap-2.5 pl-2 border-l border-white/10 cursor-pointer group"
+          title="Click to edit profile"
+        >
+          <div className="relative transition-transform group-hover:scale-105">
+            <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-emerald-400 via-indigo-500 to-purple-500 p-[1.5px] shadow-[0_0_12px_rgba(16,185,129,0.3)]">
+              <div className="w-full h-full bg-slate-950 rounded-[10px] flex items-center justify-center text-xs font-bold text-white overflow-hidden">
+                {userAvatar && (userAvatar.startsWith("data:image/") || userAvatar.startsWith("http")) ? (
+                  <img src={userAvatar} alt={userName} className="w-full h-full object-cover" />
+                ) : userAvatar ? (
+                  <span className="text-base">{userAvatar}</span>
+                ) : (
+                  initials
+                )}
               </div>
             </div>
             <span className="absolute -bottom-1 -right-1 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-slate-950 border border-white/20 text-[8px] font-bold text-amber-400">
@@ -185,11 +214,11 @@ export function Header({ timerActive, timerTime }: HeaderProps) {
 
           <div className="hidden sm:flex flex-col">
             <span className="text-xs font-bold text-slate-100 flex items-center gap-1">
-              Alex Vance
+              {userName}
               <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
             </span>
             <span className="text-[10px] text-slate-400 font-mono">
-              Level 12 • 4,820 XP
+              {userTitle} • 4,820 XP
             </span>
           </div>
         </div>

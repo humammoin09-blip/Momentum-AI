@@ -29,8 +29,11 @@ export interface TaskListProps {
   setTasks?: React.Dispatch<React.SetStateAction<Task[]>>;
 }
 
-export default function TaskList(_props?: TaskListProps) {
-  const [tasks, setTasks] = useState<Task[]>([]);
+export default function TaskList(props?: TaskListProps) {
+  const [internalTasks, setInternalTasks] = useState<Task[]>([]);
+  const tasks = props?.tasks ?? internalTasks;
+  const setTasks = props?.setTasks ?? setInternalTasks;
+
   const [newTaskTitle, setNewTaskTitle] = useState("");
   const [newTaskPriority, setNewTaskPriority] = useState("Medium");
   const [newTaskDuration, setNewTaskDuration] = useState("5");
@@ -101,7 +104,6 @@ export default function TaskList(_props?: TaskListProps) {
       const { data, error } = await supabase
         .from("tasks")
         .select("*")
-        .eq("completed", false)
         .order("created_at", { ascending: false });
 
       if (error) throw error;
@@ -171,8 +173,14 @@ export default function TaskList(_props?: TaskListProps) {
 
       if (error) throw error;
       
-      localStorage.removeItem(`task_timer_${id}`);
-      setTasks(tasks.filter((task) => task.id !== id));
+      if (nextStatus) {
+        localStorage.removeItem(`task_timer_${id}`);
+      }
+      setTasks((prevTasks) =>
+        prevTasks.map((task) =>
+          task.id === id ? { ...task, completed: nextStatus } : task
+        )
+      );
     } catch (error) {
       console.error("Error updating task:", error);
     }

@@ -26,6 +26,9 @@ interface SidebarProps {
   pendingTasksCount: number;
   timerActive: boolean;
   timerTime: string;
+  userAvatar?: string;
+  userName?: string;
+  userTitle?: string;
 }
 
 export function Sidebar({
@@ -34,6 +37,9 @@ export function Sidebar({
   pendingTasksCount,
   timerActive,
   timerTime,
+  userAvatar = "🚀",
+  userName = "Alex Vance",
+  userTitle = "Flow Master",
 }: SidebarProps) {
   const [isCollapsed, setIsCollapsed] = useState(false);
 
@@ -192,9 +198,15 @@ export function Sidebar({
         {/* User Mini Profile / Status Card */}
         <div className="relative flex items-center gap-3 p-2.5 rounded-xl bg-slate-900/60 border border-white/10">
           <div className="relative shrink-0">
-            <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-emerald-500 to-indigo-500 p-[1.5px] shadow-sm">
-              <div className="w-full h-full bg-slate-950 rounded-full flex items-center justify-center text-xs font-bold text-emerald-400">
-                AX
+            <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-emerald-500 to-indigo-500 p-[1.5px] shadow-sm overflow-hidden">
+              <div className="w-full h-full bg-slate-950 rounded-full flex items-center justify-center text-xs font-bold text-emerald-400 overflow-hidden">
+                {userAvatar && (userAvatar.startsWith("data:image/") || userAvatar.startsWith("http")) ? (
+                  <img src={userAvatar} alt="Avatar" className="w-full h-full object-cover" />
+                ) : userAvatar ? (
+                  <span className="text-xs">{userAvatar}</span>
+                ) : (
+                  "AX"
+                )}
               </div>
             </div>
             <span className="absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full bg-emerald-400 border-2 border-slate-950 shadow-[0_0_8px_#10b981]" />
@@ -208,10 +220,10 @@ export function Sidebar({
               className="flex flex-col text-left overflow-hidden flex-1"
             >
               <span className="text-xs font-semibold text-slate-200 truncate">
-                Alex Vance
+                {userName}
               </span>
-              <span className="text-[10px] text-emerald-400/90 font-medium flex items-center gap-1">
-                <Sparkles className="w-2.5 h-2.5" /> Flow Master
+              <span className="text-[10px] text-emerald-400/90 font-medium flex items-center gap-1 truncate">
+                <Sparkles className="w-2.5 h-2.5 shrink-0" /> {userTitle}
               </span>
             </motion.div>
           )}

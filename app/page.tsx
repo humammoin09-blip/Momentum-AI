@@ -8,14 +8,128 @@ import { StatCards } from "@/components/StatCards";
 import { PomodoroTimer } from "@/components/PomodoroTimer";
 import TaskList, { Task } from "@/components/TaskList";
 import { ConsistencyHeatmap } from "@/components/ConsistencyHeatmap";
+import { ProfileModal } from "@/components/ProfileModal";
 import { Sparkles, Flame, Zap, Shield, ArrowRight, BarChart3, Timer, CheckSquare } from "lucide-react";
+import { supabase } from "@/lib/supabase";
 
 export default function FlowStateDashboard() {
   const [activeTab, setActiveTab] = useState<NavTab>("dashboard");
   const [timerActive, setTimerActive] = useState<boolean>(false);
   const [timerTime, setTimerTime] = useState<string>("25:00");
-  const [focusHours, setFocusHours] = useState<number>(5.4);
-  const [streakDays, setStreakDays] = useState<number>(14);
+  const [focusHours, setFocusHours] = useState<number>(0.0);
+  const [streakDays, setStreakDays] = useState<number>(0);
+
+  // Profile Customization States
+  const [userName, setUserName] = useState<string>("Alex Vance");
+  const [userTitle, setUserTitle] = useState<string>("Flow Master");
+  const [dailyGoal, setDailyGoal] = useState<number>(6);
+  const [userAvatar, setUserAvatar] = useState<string>("🚀");
+  const [isProfileOpen, setIsProfileOpen] = useState<boolean>(false);
+
+  // Load profile from localStorage on mount
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const savedName = localStorage.getItem("flowstate_user_name");
+      const savedTitle = localStorage.getItem("flowstate_user_title");
+      const savedGoal = localStorage.getItem("flowstate_daily_goal");
+      const savedAvatar = localStorage.getItem("flowstate_user_avatar");
+      if (savedName) setUserName(savedName);
+      if (savedTitle) setUserTitle(savedTitle);
+      if (savedGoal) setDailyGoal(parseFloat(savedGoal));
+      if (savedAvatar) setUserAvatar(savedAvatar);
+    }
+  }, []);
+
+  // Fetch dynamic active streak and focus hours from focus_sessions table
+  const fetchAnalyticsAndStreak = async () => {
+    try {
+      const { data: sessions, error } = await supabase
+        .from("focus_sessions")
+        .select("duration_minutes, created_at");
+
+      if (!error && sessions && sessions.length > 0) {
+        const activeDatesSet = new Set<string>();
+        let todayMins = 0;
+        const todayStr = new Date().toISOString().split("T")[0];
+
+        sessions.forEach((s) => {
+          if (s.created_at) {
+            const dateObj = new Date(s.created_at);
+            const dateStr = dateObj.toISOString().split("T")[0];
+            activeDatesSet.add(dateStr);
+
+            if (dateStr === todayStr) {
+              todayMins += s.duration_minutes || 25;
+            }
+          }
+        });
+
+        setStreakDays(activeDatesSet.size);
+        setFocusHours(Number((todayMins / 60).toFixed(1)));
+      } else {
+        setStreakDays(0);
+        setFocusHours(0.0);
+      }
+    } catch (err) {
+      console.error("Error fetching streak and focus hours:", err);
+    }
+  };
+
+  useEffect(() => {
+    fetchAnalyticsAndStreak();
+
+    const channel = supabase
+      .channel("dashboard_focus_sessions_realtime")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "focus_sessions" },
+        () => {
+          fetchAnalyticsAndStreak();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, []);
+
+  // Fetch tasks dynamically from tasks table
+  const [tasks, setTasks] = useState<Task[]>([]);
+
+  const fetchDashboardTasks = async () => {
+    try {
+      const { data, error } = await supabase
+        .from("tasks")
+        .select("*")
+        .order("created_at", { ascending: false });
+
+      if (!error && data) {
+        setTasks(data);
+      }
+    } catch (err) {
+      console.error("Error fetching tasks for dashboard:", err);
+    }
+  };
+
+  useEffect(() => {
+    fetchDashboardTasks();
+
+    const channel = supabase
+      .channel("dashboard_tasks_realtime")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "tasks" },
+        () => {
+          fetchDashboardTasks();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, []);
 
   // Request browser notification permissions on app load
   useEffect(() => {
@@ -65,47 +179,8 @@ export default function FlowStateDashboard() {
     };
   }, []);
 
-  // Initial Daily MIT Tasks
-  const [tasks, setTasks] = useState<Task[]>([
-    {
-      id: "1",
-      title: "Architect FlowState OLED Dashboard Layout",
-      category: "Deep Work",
-      duration: "60m",
-      completed: true,
-    },
-    {
-      id: "2",
-      title: "Refactor Framer Motion Staggered Animations",
-      category: "Deep Work",
-      duration: "45m",
-      completed: true,
-    },
-    {
-      id: "3",
-      title: "Integrate Pomodoro Timer & Soundscape Audio Engine",
-      category: "Urgent",
-      duration: "30m",
-      completed: true,
-    },
-    {
-      id: "4",
-      title: "Build Weekly Consistency Heatmap & Bar Chart",
-      category: "Planning",
-      duration: "45m",
-      completed: true,
-    },
-    {
-      id: "5",
-      title: "Review System Performance & Edge Case Lints",
-      category: "Quick Win",
-      duration: "15m",
-      completed: false,
-    },
-  ]);
-
   const completedCount = tasks.filter((t) => t.completed).length;
-  const pendingCount = tasks.length - completedCount;
+  const pendingCount = tasks.filter((t) => !t.completed).length;
 
   // Stagger Container Animation Variants
   const containerVariants = {
@@ -128,7 +203,6 @@ export default function FlowStateDashboard() {
     },
   };
 
-
   return (
     <div className="flex min-h-screen bg-slate-950 text-slate-100 font-sans relative overflow-x-hidden selection:bg-emerald-500/30 selection:text-emerald-200">
       {/* Background Radial Neon Mesh Gradient */}
@@ -145,12 +219,22 @@ export default function FlowStateDashboard() {
         pendingTasksCount={pendingCount}
         timerActive={timerActive}
         timerTime={timerTime}
+        userAvatar={userAvatar}
+        userName={userName}
+        userTitle={userTitle}
       />
 
       {/* Main Container */}
       <div className="flex-1 flex flex-col min-w-0 z-10">
-        {/* Top Header */}
-        <Header timerActive={timerActive} timerTime={timerTime} />
+        {/* Top Header with Profile Click Handler */}
+        <Header 
+          timerActive={timerActive} 
+          timerTime={timerTime} 
+          userName={userName}
+          userTitle={userTitle}
+          userAvatar={userAvatar}
+          onOpenProfile={() => setIsProfileOpen(true)}
+        />
 
         {/* Content Area */}
         <main className="flex-1 px-4 sm:px-8 py-6 space-y-6 max-w-7xl w-full mx-auto">
@@ -171,6 +255,7 @@ export default function FlowStateDashboard() {
                     streakDays={streakDays}
                     completedTasks={completedCount}
                     totalTasks={tasks.length}
+                    dailyGoalHours={Number(dailyGoal)}
                   />
                 </motion.section>
 
@@ -186,7 +271,7 @@ export default function FlowStateDashboard() {
                       timerTime={timerTime}
                       setTimerTime={setTimerTime}
                       onFocusComplete={() => {
-                        setFocusHours((prev) => +(prev + 0.42).toFixed(1));
+                        fetchAnalyticsAndStreak();
                       }}
                     />
                   </div>
@@ -261,6 +346,20 @@ export default function FlowStateDashboard() {
           </AnimatePresence>
         </main>
       </div>
+
+      {/* Profile Setup Modal */}
+      <ProfileModal
+        isOpen={isProfileOpen}
+        onClose={() => setIsProfileOpen(false)}
+        userName={userName}
+        setUserName={setUserName}
+        userTitle={userTitle}
+        setUserTitle={setUserTitle}
+        dailyGoal={dailyGoal.toString()}
+        setDailyGoal={(goal: string) => setDailyGoal(parseFloat(goal))}
+        userAvatar={userAvatar}
+        setUserAvatar={setUserAvatar}
+      />
     </div>
   );
 }
