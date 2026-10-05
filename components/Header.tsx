@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Search,
@@ -13,7 +13,60 @@ import {
   Volume2,
   ShieldCheck,
   Zap,
+  Check,
+  Trash2,
 } from "lucide-react";
+
+export interface NotificationItem {
+  id: string | number;
+  title: string;
+  time: string;
+  timestamp?: number;
+  read: boolean;
+  type?: "pomodoro" | "task" | "system";
+}
+
+export const STORAGE_KEY_NOTIFICATIONS = "flowstate_notifications";
+export const NOTIFICATION_EVENT = "flowstate_new_notification";
+
+const DEFAULT_NOTIFICATIONS: NotificationItem[] = [
+  {
+    id: "notif-1",
+    title: "14-Day Streak Unlocked! 🔥",
+    time: "10m ago",
+    timestamp: Date.now() - 10 * 60 * 1000,
+    read: false,
+    type: "system",
+  },
+  {
+    id: "notif-2",
+    title: "Pomodoro Session 2 Completed",
+    time: "45m ago",
+    timestamp: Date.now() - 45 * 60 * 1000,
+    read: true,
+    type: "pomodoro",
+  },
+  {
+    id: "notif-3",
+    title: "Weekly Consistency Report ready",
+    time: "2h ago",
+    timestamp: Date.now() - 2 * 60 * 60 * 1000,
+    read: true,
+    type: "system",
+  },
+];
+
+function formatTimeAgo(timestamp?: number, fallback = "Just now"): string {
+  if (!timestamp) return fallback;
+  const diffSec = Math.floor((Date.now() - timestamp) / 1000);
+  if (diffSec < 60) return "Just now";
+  const diffMin = Math.floor(diffSec / 60);
+  if (diffMin < 60) return `${diffMin}m ago`;
+  const diffHour = Math.floor(diffMin / 60);
+  if (diffHour < 24) return `${diffHour}h ago`;
+  const diffDay = Math.floor(diffHour / 24);
+  return `${diffDay}d ago`;
+}
 
 interface HeaderProps {
   timerActive: boolean;
@@ -35,7 +88,173 @@ export function Header({
   const [greeting, setGreeting] = useState("Good Afternoon");
   const [currentDateStr, setCurrentDateStr] = useState("");
   const [showNotifications, setShowNotifications] = useState(false);
+  const [notifications, setNotifications] = useState<NotificationItem[]>([]);
 
+  // Ref tracking notified events to prevent duplicate notifications during countdown intervals
+  const notifiedEventsRef = useRef<Set<string>>(new Set());
+
+  // Initialize notifications from localStorage with fallback to DEFAULT_NOTIFICATIONS
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY_NOTIFICATIONS);
+      if (saved) {
+        const parsed: NotificationItem[] = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          const updated = parsed.map((n) => ({
+            ...n,
+            time: formatTimeAgo(n.timestamp, n.time),
+          }));
+          setNotifications(updated);
+          return;
+        }
+      }
+    } catch {
+      // Fallback on json parse errors
+    }
+    setNotifications(DEFAULT_NOTIFICATIONS);
+    try {
+      localStorage.setItem(
+        STORAGE_KEY_NOTIFICATIONS,
+        JSON.stringify(DEFAULT_NOTIFICATIONS)
+      );
+    } catch {
+      // Ignore localStorage write error
+    }
+  }, []);
+
+  // Save helper function
+  const saveNotifications = (items: NotificationItem[]) => {
+    setNotifications(items);
+    try {
+      localStorage.setItem(STORAGE_KEY_NOTIFICATIONS, JSON.stringify(items));
+    } catch {
+      // Ignore
+    }
+  };
+
+  const addNotification = (item: {
+    title: string;
+    type?: "pomodoro" | "task" | "system";
+  }) => {
+    const newItem: NotificationItem = {
+      id: `notif-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+      title: item.title,
+      time: "Just now",
+      timestamp: Date.now(),
+      read: false,
+      type: item.type || "system",
+    };
+
+    setNotifications((prev) => {
+      const updated = [newItem, ...prev.slice(0, 29)];
+      try {
+        localStorage.setItem(
+          STORAGE_KEY_NOTIFICATIONS,
+          JSON.stringify(updated)
+        );
+      } catch {
+        // Ignore
+      }
+      return updated;
+    });
+  };
+
+  // Real-time notification event listener & cross-tab storage sync
+  useEffect(() => {
+    // 1. Custom event listener for explicitly dispatched notification events
+    const handleCustomNotification = (e: Event) => {
+      const customEvent = e as CustomEvent<{
+        title: string;
+        type?: "pomodoro" | "task" | "system";
+      }>;
+      if (customEvent.detail && customEvent.detail.title) {
+        addNotification({
+          title: customEvent.detail.title,
+          type: customEvent.detail.type,
+        });
+      }
+    };
+
+    // 2. Storage event listener for updates from other tabs
+    const handleStorageChange = (e: StorageEvent) => {
+      if (e.key === STORAGE_KEY_NOTIFICATIONS && e.newValue) {
+        try {
+          const parsed = JSON.parse(e.newValue);
+          if (Array.isArray(parsed)) {
+            setNotifications(
+              parsed.map((n: NotificationItem) => ({
+                ...n,
+                time: formatTimeAgo(n.timestamp, n.time),
+              }))
+            );
+          }
+        } catch {
+          // Ignore
+        }
+      }
+    };
+
+    // 3. Listener / Poller for Pomodoro and Task timer transitions to zero or alerts
+    const checkTimerEvents = () => {
+      // Check Pomodoro Target End Time
+      const pomodoroTargetEnd = localStorage.getItem("flowstate_pomodoro_target_end_time");
+      const pomodoroRunning = localStorage.getItem("flowstate_pomodoro_running") === "true";
+      const pomodoroMode = localStorage.getItem("flowstate_pomodoro_mode") || "focus";
+
+      if (pomodoroTargetEnd && pomodoroRunning) {
+        const endTimeNum = Number(pomodoroTargetEnd);
+        const remaining = Math.ceil((endTimeNum - Date.now()) / 1000);
+
+        if (remaining <= 0) {
+          const eventKey = `pomodoro_zero_${endTimeNum}`;
+          if (!notifiedEventsRef.current.has(eventKey)) {
+            notifiedEventsRef.current.add(eventKey);
+            const modeName = pomodoroMode.charAt(0).toUpperCase() + pomodoroMode.slice(1);
+            addNotification({
+              title: `Pomodoro ${modeName} Session Complete! 🎯`,
+              type: "pomodoro",
+            });
+          }
+        }
+      }
+
+      // Check MIT task timers in localStorage
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key && key.startsWith("task_timer_end_")) {
+          const taskId = key.replace("task_timer_end_", "");
+          const endVal = localStorage.getItem(key);
+          if (endVal) {
+            const endNum = Number(endVal);
+            const taskRemaining = Math.ceil((endNum - Date.now()) / 1000);
+            if (taskRemaining <= 0) {
+              const eventKey = `task_zero_${taskId}_${endNum}`;
+              if (!notifiedEventsRef.current.has(eventKey)) {
+                notifiedEventsRef.current.add(eventKey);
+                addNotification({
+                  title: `MIT Task Timer Hit 0:00! ⚡`,
+                  type: "task",
+                });
+              }
+            }
+          }
+        }
+      }
+    };
+
+    window.addEventListener(NOTIFICATION_EVENT, handleCustomNotification);
+    window.addEventListener("storage", handleStorageChange);
+
+    const timerCheckInterval = setInterval(checkTimerEvents, 1000);
+
+    return () => {
+      window.removeEventListener(NOTIFICATION_EVENT, handleCustomNotification);
+      window.removeEventListener("storage", handleStorageChange);
+      clearInterval(timerCheckInterval);
+    };
+  }, []);
+
+  // Update timestamps and header greeting
   useEffect(() => {
     const updateTime = () => {
       const now = new Date();
@@ -50,6 +269,14 @@ export function Header({
         day: "numeric",
       };
       setCurrentDateStr(now.toLocaleDateString("en-US", options));
+
+      // Refresh relative timestamps (e.g. "Just now" -> "1m ago")
+      setNotifications((prev) =>
+        prev.map((n) => ({
+          ...n,
+          time: formatTimeAgo(n.timestamp, n.time),
+        }))
+      );
     };
 
     updateTime();
@@ -57,26 +284,16 @@ export function Header({
     return () => clearInterval(interval);
   }, []);
 
-  const notifications = [
-    {
-      id: 1,
-      title: "14-Day Streak Unlocked! 🔥",
-      time: "10m ago",
-      read: false,
-    },
-    {
-      id: 2,
-      title: "Pomodoro Session 2 Completed",
-      time: "45m ago",
-      read: true,
-    },
-    {
-      id: 3,
-      title: "Weekly Consistency Report ready",
-      time: "2h ago",
-      read: true,
-    },
-  ];
+  const markAllAsRead = () => {
+    const updated = notifications.map((n) => ({ ...n, read: true }));
+    saveNotifications(updated);
+  };
+
+  const clearAllNotifications = () => {
+    saveNotifications([]);
+  };
+
+  const unreadCount = notifications.filter((n) => !n.read).length;
 
   // Get user initials for avatar fallback
   const initials = userName
@@ -145,7 +362,9 @@ export function Header({
             aria-label="Notifications"
           >
             <Bell className="w-4 h-4" />
-            <span className="absolute top-2 right-2 w-2 h-2 rounded-full bg-emerald-400 shadow-[0_0_8px_#10b981]" />
+            {unreadCount > 0 && (
+              <span className="absolute top-2 right-2 w-2 h-2 rounded-full bg-emerald-400 shadow-[0_0_8px_#10b981]" />
+            )}
           </button>
 
           <AnimatePresence>
@@ -158,31 +377,99 @@ export function Header({
                 className="absolute right-0 mt-2 w-80 rounded-2xl bg-slate-900/95 backdrop-blur-2xl border border-white/15 shadow-2xl p-4 z-50 space-y-3"
               >
                 <div className="flex items-center justify-between border-b border-white/10 pb-2">
-                  <span className="text-xs font-bold text-white uppercase tracking-wider">
-                    Notifications
-                  </span>
-                  <span className="text-[10px] font-medium text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-full border border-emerald-500/20">
-                    3 New
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-bold text-white uppercase tracking-wider">
+                      Notifications
+                    </span>
+                    {unreadCount > 0 && (
+                      <span className="text-[10px] font-medium text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-full border border-emerald-500/20">
+                        {unreadCount} New
+                      </span>
+                    )}
+                  </div>
+                  {notifications.length > 0 && (
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={markAllAsRead}
+                        className="text-[10px] text-slate-400 hover:text-emerald-400 transition-colors flex items-center gap-0.5"
+                        title="Mark all as read"
+                      >
+                        <Check className="w-3 h-3" />
+                        <span>Read</span>
+                      </button>
+                      <span className="text-slate-600">•</span>
+                      <button
+                        onClick={clearAllNotifications}
+                        className="text-[10px] text-slate-400 hover:text-rose-400 transition-colors flex items-center gap-0.5"
+                        title="Clear all"
+                      >
+                        <Trash2 className="w-3 h-3" />
+                        <span>Clear</span>
+                      </button>
+                    </div>
+                  )}
                 </div>
 
-                <div className="space-y-2">
-                  {notifications.map((n) => (
-                    <div
-                      key={n.id}
-                      className="flex items-start gap-2.5 p-2 rounded-xl bg-white/[0.03] hover:bg-white/[0.06] border border-white/5 transition-all text-left"
-                    >
-                      <div className="p-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 mt-0.5">
-                        <Zap className="w-3.5 h-3.5" />
-                      </div>
-                      <div className="flex-1 overflow-hidden">
-                        <p className="text-xs font-semibold text-slate-200">
-                          {n.title}
-                        </p>
-                        <p className="text-[10px] text-slate-400">{n.time}</p>
-                      </div>
+                <div className="space-y-2 max-h-72 overflow-y-auto pr-1 custom-scrollbar">
+                  {notifications.length === 0 ? (
+                    <div className="py-6 text-center text-xs text-slate-400">
+                      No notifications yet
                     </div>
-                  ))}
+                  ) : (
+                    notifications.map((n) => (
+                      <div
+                        key={n.id}
+                        onClick={() => {
+                          if (!n.read) {
+                            const updated = notifications.map((item) =>
+                              item.id === n.id ? { ...item, read: true } : item
+                            );
+                            saveNotifications(updated);
+                          }
+                        }}
+                        className={`flex items-start gap-2.5 p-2 rounded-xl transition-all text-left cursor-pointer ${
+                          n.read
+                            ? "bg-white/[0.02] hover:bg-white/[0.05] border border-white/5 opacity-75"
+                            : "bg-emerald-500/[0.06] hover:bg-emerald-500/[0.1] border border-emerald-500/20"
+                        }`}
+                      >
+                        <div
+                          className={`p-1.5 rounded-lg border mt-0.5 ${
+                            n.type === "pomodoro"
+                              ? "bg-amber-500/10 border-amber-500/20 text-amber-400"
+                              : n.type === "task"
+                              ? "bg-cyan-500/10 border-cyan-500/20 text-cyan-400"
+                              : "bg-emerald-500/10 border-emerald-500/20 text-emerald-400"
+                          }`}
+                        >
+                          {n.type === "pomodoro" ? (
+                            <Clock className="w-3.5 h-3.5" />
+                          ) : n.type === "task" ? (
+                            <CheckCircle2 className="w-3.5 h-3.5" />
+                          ) : (
+                            <Zap className="w-3.5 h-3.5" />
+                          )}
+                        </div>
+                        <div className="flex-1 overflow-hidden">
+                          <p
+                            className={`text-xs ${
+                              n.read
+                                ? "font-normal text-slate-300"
+                                : "font-semibold text-white"
+                            }`}
+                          >
+                            {n.title}
+                          </p>
+                          <p className="text-[10px] text-slate-400 mt-0.5">
+                            {n.time}
+                          </p>
+                        </div>
+                        {!n.read && (
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 mt-1.5 flex-shrink-0" />
+                        )}
+                      </div>
+                    ))
+                  )}
                 </div>
               </motion.div>
             )}
@@ -190,7 +477,7 @@ export function Header({
         </div>
 
         {/* User Profile Avatar Badge - Clickable to open ProfileModal */}
-        <div 
+        <div
           onClick={onOpenProfile}
           className="flex items-center gap-2.5 pl-2 border-l border-white/10 cursor-pointer group"
           title="Click to edit profile"
@@ -198,8 +485,14 @@ export function Header({
           <div className="relative transition-transform group-hover:scale-105">
             <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-emerald-400 via-indigo-500 to-purple-500 p-[1.5px] shadow-[0_0_12px_rgba(16,185,129,0.3)]">
               <div className="w-full h-full bg-slate-950 rounded-[10px] flex items-center justify-center text-xs font-bold text-white overflow-hidden">
-                {userAvatar && (userAvatar.startsWith("data:image/") || userAvatar.startsWith("http")) ? (
-                  <img src={userAvatar} alt={userName} className="w-full h-full object-cover" />
+                {userAvatar &&
+                (userAvatar.startsWith("data:image/") ||
+                  userAvatar.startsWith("http")) ? (
+                  <img
+                    src={userAvatar}
+                    alt={userName}
+                    className="w-full h-full object-cover"
+                  />
                 ) : userAvatar ? (
                   <span className="text-base">{userAvatar}</span>
                 ) : (

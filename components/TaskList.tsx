@@ -39,9 +39,10 @@ export default function TaskList(props?: TaskListProps) {
   const [newTaskDuration, setNewTaskDuration] = useState("5");
   const [loading, setLoading] = useState(true);
   const [showAlert, setShowAlert] = useState(false);
+  const notifiedTaskTimesRef = React.useRef<Set<string>>(new Set());
 
   useEffect(() => {
-    if ("Notification" in window && Notification.permission !== "granted") {
+    if (typeof window !== "undefined" && "Notification" in window && Notification.permission === "default") {
       Notification.requestPermission();
     }
   }, []);
@@ -65,24 +66,53 @@ export default function TaskList(props?: TaskListProps) {
     };
   }, []);
 
-  // Countdown timer interval with localStorage sync
+  // Countdown timer interval with localStorage sync & target end timestamp persistence
   useEffect(() => {
     const timer = setInterval(() => {
       setTasks((prevTasks) =>
         prevTasks.map((task) => {
-          if (task.completed || task.remainingSeconds === undefined) return task;
-          if (task.remainingSeconds <= 0) return task;
+          if (task.completed) return task;
 
-          const newTime = task.remainingSeconds - 1;
-          localStorage.setItem(`task_timer_${task.id}`, newTime.toString());
+          let currentRemaining = task.remainingSeconds;
+          if (currentRemaining === undefined) {
+            const savedTime = localStorage.getItem(`task_timer_${task.id}`);
+            const savedEnd = localStorage.getItem(`task_timer_end_${task.id}`);
+            const defaultMins = parseInt(task.duration || "5", 10) || 5;
 
-          if (newTime === 120 || newTime === 60) {
-            if ("Notification" in window && Notification.permission === "granted") {
-              new Notification("FlowState Alert ⚡", {
-                body: `Task "${task.title}" is due soon! Only ${Math.ceil(newTime / 60)} minutes left.`,
-                icon: "/favicon.ico",
-              });
+            if (savedEnd) {
+              currentRemaining = Math.max(0, Math.ceil((Number(savedEnd) - Date.now()) / 1000));
+            } else if (savedTime !== null) {
+              currentRemaining = parseInt(savedTime, 10);
+            } else {
+              currentRemaining = defaultMins * 60;
             }
+          }
+
+          if (currentRemaining <= 0) return { ...task, remainingSeconds: 0 };
+
+          const newTime = currentRemaining - 1;
+          const targetEndTime = Date.now() + newTime * 1000;
+
+          localStorage.setItem(`task_timer_${task.id}`, newTime.toString());
+          localStorage.setItem(`task_timer_end_${task.id}`, targetEndTime.toString());
+
+          // Trigger push notification at 120s (2m) and 60s (1m) remaining
+          if (newTime === 120 || newTime === 60) {
+            const notifyKey = `${task.id}_${newTime}`;
+            if (!notifiedTaskTimesRef.current.has(notifyKey)) {
+              notifiedTaskTimesRef.current.add(notifyKey);
+              if (typeof window !== "undefined" && "Notification" in window && Notification.permission === "granted") {
+                new Notification("FlowState MIT Alert ⚡", {
+                  body: `Task "${task.title}" is ending soon! Only ${Math.ceil(newTime / 60)} minute${newTime > 60 ? "s" : ""} left.`,
+                  icon: "/favicon.ico",
+                });
+              }
+            }
+          }
+
+          if (newTime <= 0) {
+            localStorage.removeItem(`task_timer_${task.id}`);
+            localStorage.removeItem(`task_timer_end_${task.id}`);
           }
 
           return { ...task, remainingSeconds: newTime };
@@ -110,10 +140,21 @@ export default function TaskList(props?: TaskListProps) {
       if (data) {
         const formattedTasks = data.map((t) => {
           const savedTime = localStorage.getItem(`task_timer_${t.id}`);
-          const mins = parseInt(t.duration) || 5;
+          const savedEnd = localStorage.getItem(`task_timer_end_${t.id}`);
+          const defaultMins = parseInt(t.duration, 10) || 5;
+
+          let remaining: number;
+          if (savedEnd) {
+            remaining = Math.max(0, Math.ceil((Number(savedEnd) - Date.now()) / 1000));
+          } else if (savedTime !== null) {
+            remaining = parseInt(savedTime, 10);
+          } else {
+            remaining = defaultMins * 60;
+          }
+
           return {
             ...t,
-            remainingSeconds: savedTime !== null ? parseInt(savedTime) : mins * 60,
+            remainingSeconds: isNaN(remaining) ? defaultMins * 60 : remaining,
           };
         });
         setTasks(formattedTasks);
@@ -148,7 +189,9 @@ export default function TaskList(props?: TaskListProps) {
       if (data) {
         const newTaskId = data[0].id;
         const initialSeconds = durationMins * 60;
+        const targetEndTime = Date.now() + initialSeconds * 1000;
         localStorage.setItem(`task_timer_${newTaskId}`, initialSeconds.toString());
+        localStorage.setItem(`task_timer_end_${newTaskId}`, targetEndTime.toString());
 
         const newTask = {
           ...data[0],
@@ -175,6 +218,7 @@ export default function TaskList(props?: TaskListProps) {
       
       if (nextStatus) {
         localStorage.removeItem(`task_timer_${id}`);
+        localStorage.removeItem(`task_timer_end_${id}`);
       }
       setTasks((prevTasks) =>
         prevTasks.map((task) =>
@@ -192,6 +236,7 @@ export default function TaskList(props?: TaskListProps) {
 
       if (error) throw error;
       localStorage.removeItem(`task_timer_${id}`);
+      localStorage.removeItem(`task_timer_end_${id}`);
       setTasks(tasks.filter((task) => task.id !== id));
     } catch (error) {
       console.error("Error deleting task:", error);

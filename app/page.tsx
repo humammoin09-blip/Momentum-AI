@@ -105,7 +105,26 @@ export default function FlowStateDashboard() {
         .order("created_at", { ascending: false });
 
       if (!error && data) {
-        setTasks(data);
+        const formattedTasks = data.map((t) => {
+          const savedTime = localStorage.getItem(`task_timer_${t.id}`);
+          const savedEnd = localStorage.getItem(`task_timer_end_${t.id}`);
+          const defaultMins = parseInt(t.duration, 10) || 5;
+
+          let remaining: number;
+          if (savedEnd) {
+            remaining = Math.max(0, Math.ceil((Number(savedEnd) - Date.now()) / 1000));
+          } else if (savedTime !== null) {
+            remaining = parseInt(savedTime, 10);
+          } else {
+            remaining = defaultMins * 60;
+          }
+
+          return {
+            ...t,
+            remainingSeconds: isNaN(remaining) ? defaultMins * 60 : remaining,
+          };
+        });
+        setTasks(formattedTasks);
       }
     } catch (err) {
       console.error("Error fetching tasks for dashboard:", err);
@@ -131,9 +150,13 @@ export default function FlowStateDashboard() {
     };
   }, []);
 
-  // Request browser notification permissions on app load
+  // Request browser notification permissions cleanly on app load
   useEffect(() => {
-    if (typeof window !== "undefined" && "Notification" in window && Notification.permission !== "granted") {
+    if (
+      typeof window !== "undefined" &&
+      "Notification" in window &&
+      Notification.permission === "default"
+    ) {
       Notification.requestPermission();
     }
   }, []);

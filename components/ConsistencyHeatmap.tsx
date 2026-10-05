@@ -45,7 +45,17 @@ export function ConsistencyHeatmap() {
       const { data: sessions, error: sessionErr } = await supabase.from("focus_sessions").select("*");
       if (sessionErr) throw sessionErr;
 
-      let totalMins = 0;
+      // 1. Determine Current Week's Calendar Boundaries (Monday 00:00:00 to Sunday 23:59:59 in local time)
+      const now = new Date();
+      const currentDayOfWeek = now.getDay(); // 0 is Sunday, 1 is Monday, ...
+      const diffToMonday = currentDayOfWeek === 0 ? -6 : 1 - currentDayOfWeek;
+      
+      const mondayDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() + diffToMonday, 0, 0, 0, 0);
+      const sundayDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() + diffToMonday + 6, 23, 59, 59, 999);
+      const startOfWeekMs = mondayDate.getTime();
+      const endOfWeekMs = sundayDate.getTime();
+
+      let currentWeekMins = 0;
       const weekDays = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
       const dayMap: { [key: string]: { mins: number; count: number } } = {
         Mon: { mins: 0, count: 0 },
@@ -62,27 +72,38 @@ export function ConsistencyHeatmap() {
       if (sessions && sessions.length > 0) {
         sessions.forEach((s) => {
           const mins = s.duration_minutes || 25;
-          totalMins += mins;
 
           if (s.created_at) {
             const dateObj = new Date(s.created_at);
-            const dateStr = dateObj.toISOString().split("T")[0];
-            activeDatesSet.add(dateStr);
+            const sessionMs = dateObj.getTime();
+            
+            // Format local YYYY-MM-DD for streak calculation
+            const localYear = dateObj.getFullYear();
+            const localMonth = String(dateObj.getMonth() + 1).padStart(2, "0");
+            const localDate = String(dateObj.getDate()).padStart(2, "0");
+            const localDateStr = `${localYear}-${localMonth}-${localDate}`;
+            activeDatesSet.add(localDateStr);
 
-            const dayIndex = (dateObj.getDay() + 6) % 7;
-            const dayName = weekDays[dayIndex];
-            if (dayMap[dayName]) {
-              dayMap[dayName].mins += mins;
-              dayMap[dayName].count += 1;
+            // Strictly filter sessions to the exact current week's calendar window (Mon-Sun)
+            if (sessionMs >= startOfWeekMs && sessionMs <= endOfWeekMs) {
+              currentWeekMins += mins;
+
+              // Local day index: Mon=0, Tue=1, ..., Sun=6
+              const localDayIndex = (dateObj.getDay() + 6) % 7;
+              const dayName = weekDays[localDayIndex];
+              if (dayMap[dayName]) {
+                dayMap[dayName].mins += mins;
+                dayMap[dayName].count += 1;
+              }
             }
           }
         });
       }
 
-      const calculatedHours = Number((totalMins / 60).toFixed(1));
+      const calculatedHours = Number((currentWeekMins / 60).toFixed(1));
       setTotalFocusHours(calculatedHours);
 
-      // Weekly Bar Data Calculation
+      // Weekly Bar Data Calculation (Each day with no sessions cleanly renders 0)
       const updatedDays = weekDays.map((d) => {
         const hrs = Number((dayMap[d].mins / 60).toFixed(1));
         let intensity = 0;
@@ -103,9 +124,9 @@ export function ConsistencyHeatmap() {
       // Consistency Score Calculation (Based on weekly target of 30 hours)
       const weeklyTarget = 30;
       const calculatedScore = Math.min(100, Math.round((calculatedHours / weeklyTarget) * 100));
-      setConsistencyScore(calculatedScore > 0 ? calculatedScore : 15);
+      setConsistencyScore(calculatedScore > 0 ? calculatedScore : 0);
 
-      // Active Streak Calculation (Consecutive days with sessions)
+      // Active Streak Calculation (Consecutive unique days with sessions logged)
       setActiveStreak(activeDatesSet.size);
 
       // 2. Fetch Tasks / MITs
