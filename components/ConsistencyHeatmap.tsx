@@ -1,8 +1,23 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
-import { motion } from "framer-motion";
-import { BarChart3, Calendar, Sparkles, TrendingUp, Zap, Clock, Target, Award, Flame } from "lucide-react";
+import { motion, AnimatePresence } from "framer-motion";
+import {
+  BarChart3,
+  Calendar,
+  Sparkles,
+  TrendingUp,
+  Zap,
+  Clock,
+  Target,
+  Award,
+  Flame,
+  Download,
+  FileSpreadsheet,
+  Check,
+  AlertCircle,
+  WifiOff,
+} from "lucide-react";
 import { supabase } from "@/lib/supabase";
 
 interface DayStat {
@@ -15,6 +30,9 @@ interface DayStat {
 export function ConsistencyHeatmap() {
   const [activeView, setActiveView] = useState<"weekly" | "matrix">("weekly");
   const [hoveredDay, setHoveredDay] = useState<string | null>(null);
+  const [loading, setLoading] = useState<boolean>(true);
+  const [exported, setExported] = useState<boolean>(false);
+  const [isOfflineFallback, setIsOfflineFallback] = useState<boolean>(false);
   
   // Real Dynamic States
   const [totalFocusHours, setTotalFocusHours] = useState<number>(0);
@@ -41,11 +59,34 @@ export function ConsistencyHeatmap() {
 
   const fetchRealAnalytics = async () => {
     try {
-      // 1. Fetch Focus Sessions from Supabase
-      const { data: sessions, error: sessionErr } = await supabase.from("focus_sessions").select("*");
-      if (sessionErr) throw sessionErr;
+      setLoading(true);
+      setIsOfflineFallback(false);
 
-      // 1. Determine Current Week's Calendar Boundaries (Monday 00:00:00 to Sunday 23:59:59 in local time)
+      // 1. Fetch Focus Sessions from Supabase with safe fallback
+      let sessions: Array<{ duration_minutes?: number; created_at?: string }> | null = null;
+      try {
+        const { data, error } = await supabase.from("focus_sessions").select("*");
+        if (error) throw error;
+        sessions = data;
+        if (data && typeof window !== "undefined") {
+          localStorage.setItem("flowstate_cached_focus_sessions", JSON.stringify(data));
+        }
+      } catch (dbErr) {
+        console.warn("Supabase focus_sessions fetch failed, using offline fallback:", dbErr);
+        setIsOfflineFallback(true);
+        if (typeof window !== "undefined") {
+          const cached = localStorage.getItem("flowstate_cached_focus_sessions");
+          if (cached) {
+            try {
+              sessions = JSON.parse(cached);
+            } catch {
+              sessions = null;
+            }
+          }
+        }
+      }
+
+      // 1. Determine Current Week's Calendar Boundaries (Monday 00:00:00 to Sunday 23:59:59 in local calendar time)
       const now = new Date();
       const currentDayOfWeek = now.getDay(); // 0 is Sunday, 1 is Monday, ...
       const diffToMonday = currentDayOfWeek === 0 ? -6 : 1 - currentDayOfWeek;
@@ -74,7 +115,14 @@ export function ConsistencyHeatmap() {
           const mins = s.duration_minutes || 25;
 
           if (s.created_at) {
-            const dateObj = new Date(s.created_at);
+            // Parse timestamp string safely across browsers & timezone offsets
+            let rawTimestamp = s.created_at;
+            if (typeof rawTimestamp === "string" && !rawTimestamp.includes("Z") && !rawTimestamp.includes("+")) {
+              rawTimestamp = rawTimestamp.replace(" ", "T") + "Z";
+            }
+            const dateObj = new Date(rawTimestamp);
+            if (isNaN(dateObj.getTime())) return;
+
             const sessionMs = dateObj.getTime();
             
             // Format local YYYY-MM-DD for streak calculation
@@ -129,17 +177,38 @@ export function ConsistencyHeatmap() {
       // Active Streak Calculation (Consecutive unique days with sessions logged)
       setActiveStreak(activeDatesSet.size);
 
-      // 2. Fetch Tasks / MITs
-      const { data: tasks, error: taskErr } = await supabase.from("tasks").select("*");
-      if (!taskErr && tasks) {
-        setTotalMitsCount(tasks.length);
-        const completed = tasks.filter((t: { completed?: boolean }) => t.completed).length;
+      // 2. Fetch Tasks / MITs with safe fallback
+      let tasksData: Array<{ completed?: boolean }> | null = null;
+      try {
+        const { data, error } = await supabase.from("tasks").select("*");
+        if (error) throw error;
+        tasksData = data;
+        if (data && typeof window !== "undefined") {
+          localStorage.setItem("flowstate_cached_tasks", JSON.stringify(data));
+        }
+      } catch (taskErr) {
+        console.warn("Supabase tasks fetch failed, using offline fallback:", taskErr);
+        setIsOfflineFallback(true);
+        if (typeof window !== "undefined") {
+          const cached = localStorage.getItem("flowstate_cached_tasks");
+          if (cached) {
+            try {
+              tasksData = JSON.parse(cached);
+            } catch {
+              tasksData = null;
+            }
+          }
+        }
+      }
+
+      if (tasksData) {
+        setTotalMitsCount(tasksData.length);
+        const completed = tasksData.filter((t) => t.completed).length;
         setCompletedMitsCount(completed);
       }
 
       // 3. Generate 28-Day Matrix from real session distribution or fallback pattern
       const generatedMatrix = Array.from({ length: 28 }, (_, i) => {
-        // Fallback simulation based on index if sessions are few
         const intensity = i % 5; 
         return {
           dayIndex: i + 1,
@@ -150,7 +219,47 @@ export function ConsistencyHeatmap() {
       setMatrixData(generatedMatrix);
 
     } catch (err) {
-      console.error("Error fetching analytics:", err);
+      console.error("Graceful error handling in analytics:", err);
+      setIsOfflineFallback(true);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Weekly Productivity Summary & CSV Export
+  const handleExportWeeklyReport = () => {
+    try {
+      const now = new Date();
+      const options: Intl.DateTimeFormatOptions = { month: "short", day: "numeric", year: "numeric" };
+      const dateRangeStr = now.toLocaleDateString("en-US", options);
+
+      let csvContent = `FlowState Weekly Productivity Report\n`;
+      csvContent += `Generated At,${now.toISOString()}\n`;
+      csvContent += `Report Period,Current Week (${dateRangeStr})\n`;
+      csvContent += `Total Weekly Focus Hours,${totalFocusHours} hrs\n`;
+      csvContent += `Weekly Consistency Score,${consistencyScore}%\n`;
+      csvContent += `Completed MITs,${completedMitsCount} / ${totalMitsCount}\n`;
+      csvContent += `Active Streak,${activeStreak} Days\n\n`;
+
+      csvContent += `Day,Focus Hours,Sessions Logged,Intensity Level\n`;
+      daysData.forEach((d) => {
+        csvContent += `${d.day},${d.hours},${d.tasks},Level ${d.intensity}\n`;
+      });
+
+      const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.setAttribute("href", url);
+      link.setAttribute("download", `FlowState_Weekly_Report_${now.toISOString().split("T")[0]}.csv`);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+
+      setExported(true);
+      setTimeout(() => setExported(false), 2500);
+    } catch (err) {
+      console.error("Error exporting report:", err);
     }
   };
 
@@ -175,6 +284,31 @@ export function ConsistencyHeatmap() {
 
   return (
     <div className="space-y-6 pb-12">
+      {/* Offline Fallback Banner */}
+      <AnimatePresence>
+        {isOfflineFallback && (
+          <motion.div
+            initial={{ opacity: 0, y: -10 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -10 }}
+            className="p-3.5 rounded-2xl bg-amber-500/10 border border-amber-500/20 text-amber-300 text-xs flex items-center justify-between gap-3 shadow-lg"
+          >
+            <div className="flex items-center gap-2.5">
+              <WifiOff className="w-4 h-4 text-amber-400 shrink-0" />
+              <span>
+                <strong>Offline Persistence Active:</strong> Operating in cached offline mode. Local session data will sync automatically when connected.
+              </span>
+            </div>
+            <button
+              onClick={fetchRealAnalytics}
+              className="px-2.5 py-1 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-[10px] font-bold text-amber-200 transition-colors"
+            >
+              Retry Sync
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* Header Banner */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 glass-card p-6 rounded-3xl border border-white/10 shadow-xl relative overflow-hidden bg-slate-900/40">
         <div className="absolute top-0 right-0 w-80 h-full bg-gradient-to-l from-emerald-500/10 to-transparent pointer-events-none" />
@@ -186,64 +320,104 @@ export function ConsistencyHeatmap() {
             Real-time calculations of your focus output, consistency score, and execution velocity.
           </p>
         </div>
-        <div className="flex items-center gap-2 bg-slate-900/80 border border-white/10 px-3.5 py-2 rounded-xl text-xs text-slate-300">
-          <Calendar className="w-4 h-4 text-emerald-400" />
-          <span>Synced with Supabase Live Database</span>
+
+        <div className="flex flex-wrap items-center gap-2.5">
+          {/* Export Weekly Report Button */}
+          <button
+            onClick={handleExportWeeklyReport}
+            className="flex items-center gap-2 px-3.5 py-2 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-emerald-300 text-xs font-semibold transition-all shadow-[0_0_15px_rgba(16,185,129,0.15)] active:scale-95"
+            title="Download Weekly Summary CSV"
+          >
+            {exported ? (
+              <>
+                <Check className="w-4 h-4 text-emerald-400" />
+                <span>Exported CSV</span>
+              </>
+            ) : (
+              <>
+                <FileSpreadsheet className="w-4 h-4 text-emerald-400" />
+                <span>Export Weekly Report</span>
+              </>
+            )}
+          </button>
+
+          <div className="flex items-center gap-2 bg-slate-900/80 border border-white/10 px-3.5 py-2 rounded-xl text-xs text-slate-300">
+            <Calendar className="w-4 h-4 text-emerald-400" />
+            <span>{isOfflineFallback ? "Local Offline Cache" : "Supabase Live Database"}</span>
+          </div>
         </div>
       </div>
 
-      {/* Top 4 Quick Metric Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        {/* Total Focus Time */}
-        <div className="glass-card p-5 rounded-2xl border border-white/10 relative overflow-hidden bg-slate-900/60">
-          <div className="flex items-center justify-between text-slate-400 mb-2">
-            <span className="text-xs font-semibold uppercase tracking-wider">Total Focus Time</span>
-            <Clock className="w-4 h-4 text-emerald-400" />
-          </div>
-          <div className="text-3xl font-bold text-white">{totalFocusHours} hrs</div>
-          <div className="text-xs text-emerald-400 font-medium mt-2 flex items-center gap-1">
-            <TrendingUp className="w-3.5 h-3.5" /> Calculated from sessions
-          </div>
+      {/* Top 4 Quick Metric Cards / Skeleton Loading */}
+      {loading ? (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          {[1, 2, 3, 4].map((i) => (
+            <div
+              key={i}
+              className="glass-card p-5 rounded-2xl border border-white/10 bg-slate-900/60 animate-pulse space-y-3"
+            >
+              <div className="flex items-center justify-between">
+                <div className="h-3 w-24 bg-white/10 rounded-md" />
+                <div className="w-4 h-4 rounded-full bg-white/10" />
+              </div>
+              <div className="h-8 w-20 bg-white/15 rounded-lg pt-1" />
+              <div className="h-2.5 w-32 bg-white/10 rounded-md" />
+            </div>
+          ))}
         </div>
+      ) : (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          {/* Total Focus Time */}
+          <div className="glass-card p-5 rounded-2xl border border-white/10 relative overflow-hidden bg-slate-900/60">
+            <div className="flex items-center justify-between text-slate-400 mb-2">
+              <span className="text-xs font-semibold uppercase tracking-wider">Total Focus Time</span>
+              <Clock className="w-4 h-4 text-emerald-400" />
+            </div>
+            <div className="text-3xl font-bold text-white">{totalFocusHours} hrs</div>
+            <div className="text-xs text-emerald-400 font-medium mt-2 flex items-center gap-1">
+              <TrendingUp className="w-3.5 h-3.5" /> Calculated from sessions
+            </div>
+          </div>
 
-        {/* Consistency Score */}
-        <div className="glass-card p-5 rounded-2xl border border-white/10 relative overflow-hidden bg-slate-900/60">
-          <div className="flex items-center justify-between text-slate-400 mb-2">
-            <span className="text-xs font-semibold uppercase tracking-wider">Consistency Score</span>
-            <Target className="w-4 h-4 text-teal-400" />
+          {/* Consistency Score */}
+          <div className="glass-card p-5 rounded-2xl border border-white/10 relative overflow-hidden bg-slate-900/60">
+            <div className="flex items-center justify-between text-slate-400 mb-2">
+              <span className="text-xs font-semibold uppercase tracking-wider">Consistency Score</span>
+              <Target className="w-4 h-4 text-teal-400" />
+            </div>
+            <div className="text-3xl font-bold text-white">{consistencyScore}%</div>
+            <div className="text-xs text-teal-400 font-medium mt-2 flex items-center gap-1">
+              <Zap className="w-3.5 h-3.5" /> Based on 30h weekly goal
+            </div>
           </div>
-          <div className="text-3xl font-bold text-white">{consistencyScore}%</div>
-          <div className="text-xs text-teal-400 font-medium mt-2 flex items-center gap-1">
-            <Zap className="w-3.5 h-3.5" /> Based on 30h weekly goal
-          </div>
-        </div>
 
-        {/* Completed MITs */}
-        <div className="glass-card p-5 rounded-2xl border border-white/10 relative overflow-hidden bg-slate-900/60">
-          <div className="flex items-center justify-between text-slate-400 mb-2">
-            <span className="text-xs font-semibold uppercase tracking-wider">Completed MITs</span>
-            <Award className="w-4 h-4 text-amber-400" />
+          {/* Completed MITs */}
+          <div className="glass-card p-5 rounded-2xl border border-white/10 relative overflow-hidden bg-slate-900/60">
+            <div className="flex items-center justify-between text-slate-400 mb-2">
+              <span className="text-xs font-semibold uppercase tracking-wider">Completed MITs</span>
+              <Award className="w-4 h-4 text-amber-400" />
+            </div>
+            <div className="text-3xl font-bold text-white">
+              {completedMitsCount} / {totalMitsCount}
+            </div>
+            <div className="text-xs text-amber-400 font-medium mt-2">
+              Real task execution count
+            </div>
           </div>
-          <div className="text-3xl font-bold text-white">
-            {completedMitsCount} / {totalMitsCount}
-          </div>
-          <div className="text-xs text-amber-400 font-medium mt-2">
-            Real task execution count
-          </div>
-        </div>
 
-        {/* Active Streak */}
-        <div className="glass-card p-5 rounded-2xl border border-white/10 relative overflow-hidden bg-slate-900/60">
-          <div className="flex items-center justify-between text-slate-400 mb-2">
-            <span className="text-xs font-semibold uppercase tracking-wider">Active Streak</span>
-            <Flame className="w-4 h-4 text-rose-400" />
-          </div>
-          <div className="text-3xl font-bold text-white">{activeStreak} Days</div>
-          <div className="text-xs text-rose-400 font-medium mt-2">
-            Unique active focus days logged
+          {/* Active Streak */}
+          <div className="glass-card p-5 rounded-2xl border border-white/10 relative overflow-hidden bg-slate-900/60">
+            <div className="flex items-center justify-between text-slate-400 mb-2">
+              <span className="text-xs font-semibold uppercase tracking-wider">Active Streak</span>
+              <Flame className="w-4 h-4 text-rose-400" />
+            </div>
+            <div className="text-3xl font-bold text-white">{activeStreak} Days</div>
+            <div className="text-xs text-rose-400 font-medium mt-2">
+              Unique active focus days logged
+            </div>
           </div>
         </div>
-      </div>
+      )}
 
       {/* Main Heatmap & Consistency Card */}
       <div className="glass-card relative p-6 rounded-3xl border border-white/10 shadow-2xl overflow-hidden group bg-slate-900/60">
@@ -295,7 +469,20 @@ export function ConsistencyHeatmap() {
 
         {/* View Content */}
         <div className="py-6">
-          {activeView === "weekly" ? (
+          {loading ? (
+            /* Shimmer Loading Skeleton for Chart */
+            <div className="h-48 flex items-end justify-between gap-3 sm:gap-6 px-4 pt-6 pb-2 animate-pulse">
+              {[40, 65, 30, 80, 50, 20, 10].map((h, idx) => (
+                <div key={idx} className="flex-1 flex flex-col items-center justify-end h-full">
+                  <div
+                    style={{ height: `${h}%` }}
+                    className="w-full max-w-[42px] rounded-t-xl bg-white/10"
+                  />
+                  <div className="h-3 w-6 bg-white/10 rounded mt-2" />
+                </div>
+              ))}
+            </div>
+          ) : activeView === "weekly" ? (
             <div className="space-y-4">
               <div className="relative h-48 flex items-end justify-between gap-3 sm:gap-6 px-4 pt-6 pb-2">
                 <div className="absolute left-0 right-0 top-12 border-b border-dashed border-emerald-500/30 flex justify-between px-2">
@@ -346,6 +533,14 @@ export function ConsistencyHeatmap() {
                   );
                 })}
               </div>
+
+              {/* Zero-session helpful empty state notice */}
+              {totalFocusHours === 0 && (
+                <div className="py-3 px-4 rounded-xl bg-white/[0.02] border border-white/5 text-center text-xs text-slate-400 flex items-center justify-center gap-2">
+                  <Sparkles className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>No focus sessions recorded yet this week. Complete a Pomodoro session above to light up your consistency bars!</span>
+                </div>
+              )}
             </div>
           ) : (
             <div className="space-y-4">

@@ -1,7 +1,7 @@
 "use client";
 
 import React from "react";
-import { Flame, Target, CheckCircle2, TrendingUp } from "lucide-react";
+import { Flame, Target, CheckCircle2 } from "lucide-react";
 
 type StatCardsProps = {
   totalFocusHours: number;
@@ -9,6 +9,7 @@ type StatCardsProps = {
   completedTasks: number;
   totalTasks: number;
   dailyGoalHours: number;
+  loading?: boolean;
 };
 
 export function StatCards({
@@ -17,7 +18,31 @@ export function StatCards({
   completedTasks,
   totalTasks,
   dailyGoalHours,
+  loading = false,
 }: StatCardsProps) {
+  if (loading) {
+    return (
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        {[1, 2, 3].map((idx) => (
+          <div
+            key={idx}
+            className="p-5 rounded-2xl bg-slate-900/80 border border-white/10 backdrop-blur-xl space-y-3 relative overflow-hidden animate-pulse"
+          >
+            <div className="flex items-center justify-between">
+              <div className="h-4 w-28 bg-white/10 rounded-lg" />
+              <div className="h-4 w-20 bg-white/10 rounded-full" />
+            </div>
+            <div className="flex items-baseline gap-2 pt-1">
+              <div className="h-9 w-20 bg-white/15 rounded-xl" />
+              <div className="h-4 w-8 bg-white/10 rounded-md" />
+            </div>
+            <div className="h-3 w-36 bg-white/10 rounded-md mt-2" />
+          </div>
+        ))}
+      </div>
+    );
+  }
+
   const completionPercentage = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
 
   return (
@@ -39,7 +64,7 @@ export function StatCards({
           <span className="text-xs text-slate-400">hrs</span>
         </div>
         <p className="text-[11px] text-slate-400">
-          Deep work efficiency: <span className="text-emerald-400 font-semibold">92%</span>
+          Deep work efficiency: <span className="text-emerald-400 font-semibold">{totalFocusHours > 0 ? "92%" : "Ready"}</span>
         </p>
       </div>
 
@@ -50,7 +75,7 @@ export function StatCards({
             <Flame className="w-4 h-4 text-amber-400" /> Active Streak
           </span>
           <span className="text-xs font-mono text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded-full border border-amber-500/20">
-            Personal Best!
+            {streakDays > 0 ? "Keep Going!" : "Start Streak"}
           </span>
         </div>
         <div className="flex items-baseline gap-2">

@@ -14,6 +14,8 @@ import {
   VolumeX,
   Timer,
   Zap,
+  SlidersHorizontal,
+  AlertTriangle,
 } from "lucide-react";
 
 export type TimerMode = "focus" | "shortBreak" | "longBreak";
@@ -31,6 +33,7 @@ const STORAGE_KEY_RUNNING = "flowstate_pomodoro_running";
 const STORAGE_KEY_MODE = "flowstate_pomodoro_mode";
 const STORAGE_KEY_REMAINING = "flowstate_pomodoro_remaining";
 const STORAGE_KEY_COMPLETED_SESSIONS = "flowstate_pomodoro_completed_sessions";
+const STORAGE_KEY_FOCUS_DURATION = "flowstate_pomodoro_focus_duration_mins";
 
 export function PomodoroTimer({
   timerActive,
@@ -39,8 +42,13 @@ export function PomodoroTimer({
   setTimerTime,
   onFocusComplete,
 }: PomodoroTimerProps) {
+  // Custom focus duration in minutes (default: 25)
+  const [customFocusMins, setCustomFocusMins] = useState<number>(25);
+  const [showCustomDuration, setShowCustomDuration] = useState<boolean>(false);
+  const [pendingModeSwitch, setPendingModeSwitch] = useState<TimerMode | null>(null);
+
   const modeDurations: Record<TimerMode, number> = {
-    focus: 25 * 60,
+    focus: customFocusMins * 60,
     shortBreak: 5 * 60,
     longBreak: 15 * 60,
   };
@@ -53,6 +61,18 @@ export function PomodoroTimer({
 
   const isCompletingRef = useRef(false);
   const notifiedTimesRef = useRef<Set<number>>(new Set());
+
+  // Load custom focus duration on mount
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const savedCustom = localStorage.getItem(STORAGE_KEY_FOCUS_DURATION);
+    if (savedCustom) {
+      const parsed = parseInt(savedCustom, 10);
+      if (!isNaN(parsed) && parsed >= 1 && parsed <= 120) {
+        setCustomFocusMins(parsed);
+      }
+    }
+  }, []);
 
   const formatTime = (seconds: number) => {
     const m = Math.floor(seconds / 60);
@@ -87,17 +107,40 @@ export function PomodoroTimer({
         return next;
       });
 
-      supabase
-        .from("focus_sessions")
-        .insert([
-          {
-            duration_minutes: 25,
-            mode: "focus",
-          },
-        ])
-        .then(({ error }) => {
-          if (error) console.error("Error saving focus session:", error);
-        });
+      const sessionMins = customFocusMins || 25;
+      const newSessionRecord = {
+        duration_minutes: sessionMins,
+        mode: "focus",
+        created_at: new Date().toISOString(),
+      };
+
+      // Always cache in localStorage for robust offline persistence
+      if (typeof window !== "undefined") {
+        try {
+          const cached = localStorage.getItem("flowstate_cached_focus_sessions");
+          const existing = cached ? JSON.parse(cached) : [];
+          existing.unshift(newSessionRecord);
+          localStorage.setItem("flowstate_cached_focus_sessions", JSON.stringify(existing.slice(0, 100)));
+        } catch {
+          // ignore cache error
+        }
+      }
+
+      (async () => {
+        try {
+          const { error } = await supabase
+            .from("focus_sessions")
+            .insert([
+              {
+                duration_minutes: sessionMins,
+                mode: "focus",
+              },
+            ]);
+          if (error) console.warn("Supabase focus session sync notice (saved to local cache):", error);
+        } catch (err) {
+          console.warn("Offline/Network notice saving focus session:", err);
+        }
+      })();
 
       if (onFocusComplete) onFocusComplete();
     }
@@ -105,7 +148,7 @@ export function PomodoroTimer({
     setTimeout(() => {
       isCompletingRef.current = false;
     }, 1000);
-  }, [modeDurations, onFocusComplete, setTimerActive, setTimerTime]);
+  }, [customFocusMins, modeDurations, onFocusComplete, setTimerActive, setTimerTime]);
 
   const syncStateFromStorage = useCallback(() => {
     if (typeof window === "undefined") return;
@@ -270,7 +313,8 @@ export function PomodoroTimer({
     }
   };
 
-  const handleModeChange = (newMode: TimerMode) => {
+  // State-protected mode change: prevents accidental resets while active
+  const applyModeChange = (newMode: TimerMode) => {
     setMode(newMode);
     const duration = modeDurations[newMode];
 
@@ -282,8 +326,24 @@ export function PomodoroTimer({
     setTimeLeft(duration);
     setTimerActive(false);
     setTimerTime(formatTime(duration));
+    setPendingModeSwitch(null);
   };
 
+  const handleModeChange = (newMode: TimerMode) => {
+    if (newMode === mode) return;
+
+    // Check if a session is currently running
+    const isRunning = timerActive || localStorage.getItem(STORAGE_KEY_RUNNING) === "true";
+    if (isRunning) {
+      // State Protection: prompt the user to confirm switching modes instead of silently resetting
+      setPendingModeSwitch(newMode);
+      return;
+    }
+
+    applyModeChange(newMode);
+  };
+
+  // Fully resets the current mode's timer back to default duration, clears target end time, and pauses
   const handleReset = () => {
     const duration = modeDurations[mode];
 
@@ -294,15 +354,30 @@ export function PomodoroTimer({
     setTimeLeft(duration);
     setTimerActive(false);
     setTimerTime(formatTime(duration));
+    setPendingModeSwitch(null);
   };
 
   const handleSkip = () => {
     const nextMode: TimerMode = mode === "focus" ? "shortBreak" : "focus";
-    handleModeChange(nextMode);
+    applyModeChange(nextMode);
+  };
+
+  // Set custom duration for Focus mode
+  const handleSetCustomFocus = (mins: number) => {
+    const validMins = Math.max(1, Math.min(120, mins));
+    setCustomFocusMins(validMins);
+    localStorage.setItem(STORAGE_KEY_FOCUS_DURATION, String(validMins));
+
+    if (mode === "focus" && !timerActive) {
+      const newDurationSec = validMins * 60;
+      setTimeLeft(newDurationSec);
+      setTimerTime(formatTime(newDurationSec));
+      localStorage.setItem(STORAGE_KEY_REMAINING, String(newDurationSec));
+    }
   };
 
   const totalModeDuration = modeDurations[mode];
-  const progressRatio = (totalModeDuration - timeLeft) / totalModeDuration;
+  const progressRatio = totalModeDuration > 0 ? (totalModeDuration - timeLeft) / totalModeDuration : 0;
 
   // SVG Circular Ring parameters
   const ringRadius = 78;
@@ -359,16 +434,78 @@ export function PomodoroTimer({
             </div>
           </div>
 
-          <span
-            className={`text-xs font-semibold px-2.5 py-1 rounded-full border ${modeColors[mode].badge}`}
-          >
-            {mode === "focus"
-              ? "Deep Work"
-              : mode === "shortBreak"
-              ? "Short Rest"
-              : "Long Recovery"}
-          </span>
+          <div className="flex items-center gap-2">
+            {mode === "focus" && (
+              <button
+                onClick={() => setShowCustomDuration(!showCustomDuration)}
+                className={`p-1.5 rounded-lg border text-xs transition-all flex items-center gap-1 ${
+                  showCustomDuration
+                    ? "bg-emerald-500/20 border-emerald-500/40 text-emerald-300"
+                    : "bg-slate-900/60 border-white/10 text-slate-400 hover:text-slate-200"
+                }`}
+                title="Customize Focus Duration"
+              >
+                <SlidersHorizontal className="w-3.5 h-3.5" />
+                <span className="text-[10px] font-mono">{customFocusMins}m</span>
+              </button>
+            )}
+
+            <span
+              className={`text-xs font-semibold px-2.5 py-1 rounded-full border ${modeColors[mode].badge}`}
+            >
+              {mode === "focus"
+                ? `Deep Work (${customFocusMins}m)`
+                : mode === "shortBreak"
+                ? "Short Rest"
+                : "Long Recovery"}
+            </span>
+          </div>
         </div>
+
+        {/* Custom Duration Selector Dropdown / Inline Controls */}
+        <AnimatePresence>
+          {showCustomDuration && mode === "focus" && (
+            <motion.div
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: "auto" }}
+              exit={{ opacity: 0, height: 0 }}
+              className="p-3 rounded-2xl bg-slate-900/90 border border-white/10 backdrop-blur-xl space-y-2 overflow-hidden"
+            >
+              <div className="flex items-center justify-between text-xs text-slate-300">
+                <span className="font-semibold flex items-center gap-1.5">
+                  <Sparkles className="w-3.5 h-3.5 text-emerald-400" /> Focus Session Length:
+                </span>
+                <span className="font-mono text-emerald-400 font-bold">{customFocusMins} minutes</span>
+              </div>
+              <div className="flex items-center gap-2">
+                {[15, 20, 25, 40, 50, 60].map((mins) => (
+                  <button
+                    key={mins}
+                    onClick={() => handleSetCustomFocus(mins)}
+                    className={`flex-1 py-1 rounded-lg text-xs font-semibold font-mono transition-all border ${
+                      customFocusMins === mins
+                        ? "bg-emerald-500/25 border-emerald-500/50 text-emerald-300 shadow-sm"
+                        : "bg-slate-800/60 border-white/5 text-slate-400 hover:text-white hover:bg-slate-800"
+                    }`}
+                  >
+                    {mins}m
+                  </button>
+                ))}
+              </div>
+              <div className="flex items-center gap-2 pt-1">
+                <input
+                  type="range"
+                  min="5"
+                  max="90"
+                  step="5"
+                  value={customFocusMins}
+                  onChange={(e) => handleSetCustomFocus(Number(e.target.value))}
+                  className="w-full accent-emerald-400 cursor-pointer h-1.5 bg-slate-800 rounded-lg appearance-none"
+                />
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
 
         {/* Mode Selector Tabs */}
         <div className="grid grid-cols-3 gap-1.5 p-1 rounded-2xl bg-slate-900/80 border border-white/10">
@@ -392,7 +529,7 @@ export function PomodoroTimer({
                 )}
                 <span className="relative z-10 capitalize">
                   {m === "focus"
-                    ? "Focus (25m)"
+                    ? `Focus (${customFocusMins}m)`
                     : m === "shortBreak"
                     ? "Break (5m)"
                     : "Rest (15m)"}
@@ -402,6 +539,42 @@ export function PomodoroTimer({
           )}
         </div>
       </div>
+
+      {/* Mode Switch State Protection Modal */}
+      <AnimatePresence>
+        {pendingModeSwitch && (
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.95 }}
+            className="absolute inset-4 z-30 rounded-2xl bg-slate-950/95 backdrop-blur-2xl border border-amber-500/30 p-5 flex flex-col justify-center items-center text-center space-y-4 shadow-2xl"
+          >
+            <div className="p-3 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-400">
+              <AlertTriangle className="w-6 h-6 animate-pulse" />
+            </div>
+            <div>
+              <h3 className="text-sm font-bold text-white">Focus Session Active</h3>
+              <p className="text-xs text-slate-400 mt-1 max-w-xs">
+                Your current session countdown is still running. Switching modes will pause and change your active cycle.
+              </p>
+            </div>
+            <div className="flex items-center gap-3 w-full max-w-xs">
+              <button
+                onClick={() => setPendingModeSwitch(null)}
+                className="flex-1 py-2 rounded-xl text-xs font-semibold bg-slate-850 hover:bg-slate-800 text-slate-300 border border-white/10 transition-all"
+              >
+                Keep Active
+              </button>
+              <button
+                onClick={() => applyModeChange(pendingModeSwitch)}
+                className="flex-1 py-2 rounded-xl text-xs font-extrabold bg-amber-500 hover:bg-amber-400 text-slate-950 transition-all shadow-lg"
+              >
+                Switch & Reset
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Main Timer Dial & Numerical Countdown */}
       <div className="relative py-6 flex flex-col items-center justify-center">

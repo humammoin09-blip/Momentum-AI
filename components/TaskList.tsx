@@ -10,6 +10,7 @@ import {
   Sparkles,
   Clock,
   AlertCircle,
+  ClipboardList,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 
@@ -138,6 +139,10 @@ export default function TaskList(props?: TaskListProps) {
 
       if (error) throw error;
       if (data) {
+        if (typeof window !== "undefined") {
+          localStorage.setItem("flowstate_cached_tasks", JSON.stringify(data));
+        }
+
         const formattedTasks = data.map((t) => {
           const savedTime = localStorage.getItem(`task_timer_${t.id}`);
           const savedEnd = localStorage.getItem(`task_timer_end_${t.id}`);
@@ -160,7 +165,18 @@ export default function TaskList(props?: TaskListProps) {
         setTasks(formattedTasks);
       }
     } catch (error) {
-      console.error("Error fetching tasks:", error);
+      console.warn("Graceful fallback: error fetching tasks from database, loading local cache:", error);
+      if (typeof window !== "undefined") {
+        const cached = localStorage.getItem("flowstate_cached_tasks");
+        if (cached) {
+          try {
+            const parsed = JSON.parse(cached);
+            setTasks(parsed);
+          } catch {
+            // keep existing tasks
+          }
+        }
+      }
     } finally {
       setLoading(false);
     }
@@ -171,6 +187,8 @@ export default function TaskList(props?: TaskListProps) {
     if (!newTaskTitle.trim()) return;
 
     const durationMins = parseInt(newTaskDuration) || 5;
+    const initialSeconds = durationMins * 60;
+    const fallbackId = `local_task_${Date.now()}`;
 
     try {
       const { data, error } = await supabase
@@ -188,7 +206,6 @@ export default function TaskList(props?: TaskListProps) {
       if (error) throw error;
       if (data) {
         const newTaskId = data[0].id;
-        const initialSeconds = durationMins * 60;
         const targetEndTime = Date.now() + initialSeconds * 1000;
         localStorage.setItem(`task_timer_${newTaskId}`, initialSeconds.toString());
         localStorage.setItem(`task_timer_end_${newTaskId}`, targetEndTime.toString());
@@ -197,49 +214,73 @@ export default function TaskList(props?: TaskListProps) {
           ...data[0],
           remainingSeconds: initialSeconds,
         };
-        setTasks([newTask, ...tasks]);
+        const updated = [newTask, ...tasks];
+        setTasks(updated);
+        localStorage.setItem("flowstate_cached_tasks", JSON.stringify(updated));
         setNewTaskTitle("");
         setNewTaskDuration("5");
       }
     } catch (error) {
-      console.error("Error adding task:", error);
+      console.warn("Supabase insert failed, persisting task to local storage:", error);
+      const targetEndTime = Date.now() + initialSeconds * 1000;
+      localStorage.setItem(`task_timer_${fallbackId}`, initialSeconds.toString());
+      localStorage.setItem(`task_timer_end_${fallbackId}`, targetEndTime.toString());
+
+      const fallbackTask: Task = {
+        id: fallbackId,
+        title: newTaskTitle,
+        priority: newTaskPriority,
+        completed: false,
+        duration: `${durationMins}m`,
+        remainingSeconds: initialSeconds,
+        created_at: new Date().toISOString(),
+      };
+      const updated = [fallbackTask, ...tasks];
+      setTasks(updated);
+      localStorage.setItem("flowstate_cached_tasks", JSON.stringify(updated));
+      setNewTaskTitle("");
+      setNewTaskDuration("5");
     }
   };
 
   const toggleTask = async (id: string, currentStatus: boolean) => {
+    const nextStatus = !currentStatus;
+
+    if (nextStatus) {
+      localStorage.removeItem(`task_timer_${id}`);
+      localStorage.removeItem(`task_timer_end_${id}`);
+    }
+
+    const updated = tasks.map((task) =>
+      task.id === id ? { ...task, completed: nextStatus } : task
+    );
+    setTasks(updated);
+    localStorage.setItem("flowstate_cached_tasks", JSON.stringify(updated));
+
     try {
-      const nextStatus = !currentStatus;
       const { error } = await supabase
         .from("tasks")
         .update({ completed: nextStatus })
         .eq("id", id);
 
       if (error) throw error;
-      
-      if (nextStatus) {
-        localStorage.removeItem(`task_timer_${id}`);
-        localStorage.removeItem(`task_timer_end_${id}`);
-      }
-      setTasks((prevTasks) =>
-        prevTasks.map((task) =>
-          task.id === id ? { ...task, completed: nextStatus } : task
-        )
-      );
     } catch (error) {
-      console.error("Error updating task:", error);
+      console.warn("Supabase task toggle sync warning (local state preserved):", error);
     }
   };
 
   const deleteTask = async (id: string) => {
+    localStorage.removeItem(`task_timer_${id}`);
+    localStorage.removeItem(`task_timer_end_${id}`);
+    const updated = tasks.filter((task) => task.id !== id);
+    setTasks(updated);
+    localStorage.setItem("flowstate_cached_tasks", JSON.stringify(updated));
+
     try {
       const { error } = await supabase.from("tasks").delete().eq("id", id);
-
       if (error) throw error;
-      localStorage.removeItem(`task_timer_${id}`);
-      localStorage.removeItem(`task_timer_end_${id}`);
-      setTasks(tasks.filter((task) => task.id !== id));
     } catch (error) {
-      console.error("Error deleting task:", error);
+      console.warn("Supabase task deletion sync warning (local state preserved):", error);
     }
   };
 
@@ -285,7 +326,7 @@ export default function TaskList(props?: TaskListProps) {
           value={newTaskTitle}
           onChange={(e) => setNewTaskTitle(e.target.value)}
           placeholder="Add a new task..."
-          className="flex-1 bg-neutral-900 border border-neutral-800 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-cyan-500"
+          className="flex-1 bg-neutral-900 border border-neutral-800 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-cyan-500 placeholder:text-neutral-500"
         />
         
         <input
@@ -308,7 +349,7 @@ export default function TaskList(props?: TaskListProps) {
 
         <button
           type="submit"
-          className="bg-cyan-500 hover:bg-cyan-400 text-neutral-950 font-semibold px-5 py-3 rounded-xl transition flex items-center justify-center gap-2"
+          className="bg-cyan-500 hover:bg-cyan-400 text-neutral-950 font-semibold px-5 py-3 rounded-xl transition flex items-center justify-center gap-2 active:scale-95 shadow-md"
         >
           <Plus className="w-4 h-4" /> Add
         </button>
@@ -316,9 +357,38 @@ export default function TaskList(props?: TaskListProps) {
 
       <div className="space-y-3">
         {loading ? (
-          <p className="text-neutral-500 text-center py-6">Loading tasks from database...</p>
+          /* Glowing shimmer loading skeleton */
+          <div className="space-y-3">
+            {[1, 2, 3].map((i) => (
+              <div
+                key={i}
+                className="flex items-center justify-between p-4 rounded-xl border border-white/5 bg-slate-900/60 backdrop-blur-xl animate-pulse"
+              >
+                <div className="flex items-center gap-3">
+                  <div className="w-5 h-5 rounded-md bg-white/10" />
+                  <div className="h-4 w-40 bg-white/10 rounded-lg" />
+                </div>
+                <div className="flex items-center gap-3">
+                  <div className="h-6 w-16 rounded-full bg-white/10" />
+                  <div className="h-6 w-14 rounded-full bg-white/10" />
+                  <div className="w-4 h-4 rounded bg-white/10" />
+                </div>
+              </div>
+            ))}
+          </div>
         ) : tasks.length === 0 ? (
-          <p className="text-neutral-500 text-center py-6">No tasks found. Add your first task above!</p>
+          /* Polished empty state with helpful micro-copy */
+          <div className="p-8 rounded-2xl border border-dashed border-white/10 bg-slate-900/30 text-center flex flex-col items-center justify-center space-y-3">
+            <div className="p-3 rounded-2xl bg-cyan-500/10 border border-cyan-500/20 text-cyan-400">
+              <ClipboardList className="w-6 h-6" />
+            </div>
+            <div>
+              <p className="text-sm font-semibold text-slate-200">No active MIT tasks yet</p>
+              <p className="text-xs text-slate-400 mt-1 max-w-sm">
+                Add your Most Important Tasks (MITs) above to prioritize your high-impact work and trigger countdown alerts.
+              </p>
+            </div>
+          </div>
         ) : (
           tasks.map((task) => (
             <div
@@ -326,7 +396,7 @@ export default function TaskList(props?: TaskListProps) {
               className={`flex items-center justify-between p-4 rounded-xl border transition ${
                 task.completed
                   ? "bg-neutral-900/40 border-neutral-900 text-neutral-500 line-through"
-                  : "bg-neutral-900 border-neutral-800 text-white"
+                  : "bg-neutral-900 border-neutral-800 text-white hover:border-white/20"
               }`}
             >
               <div className="flex items-center gap-3">
@@ -334,7 +404,7 @@ export default function TaskList(props?: TaskListProps) {
                   {task.completed ? (
                     <CheckSquare className="w-5 h-5 text-cyan-400" />
                   ) : (
-                    <Square className="w-5 h-5 text-neutral-500" />
+                    <Square className="w-5 h-5 text-neutral-500 hover:text-white transition-colors" />
                   )}
                 </button>
                 <span>{task.title}</span>
@@ -350,6 +420,7 @@ export default function TaskList(props?: TaskListProps) {
                 <button
                   onClick={() => deleteTask(task.id)}
                   className="text-neutral-500 hover:text-red-400 transition"
+                  title="Delete task"
                 >
                   <Trash2 className="w-4 h-4" />
                 </button>

@@ -40,14 +40,23 @@ export default function FlowStateDashboard() {
     }
   }, []);
 
+  const [statsLoading, setStatsLoading] = useState<boolean>(true);
+
   // Fetch dynamic active streak and focus hours from focus_sessions table
   const fetchAnalyticsAndStreak = async () => {
     try {
+      setStatsLoading(true);
       const { data: sessions, error } = await supabase
         .from("focus_sessions")
         .select("duration_minutes, created_at");
 
-      if (!error && sessions && sessions.length > 0) {
+      if (error) throw error;
+
+      if (sessions && sessions.length > 0) {
+        if (typeof window !== "undefined") {
+          localStorage.setItem("flowstate_cached_focus_sessions", JSON.stringify(sessions));
+        }
+
         const activeDatesSet = new Set<string>();
         let todayMins = 0;
         const todayStr = new Date().toISOString().split("T")[0];
@@ -71,7 +80,34 @@ export default function FlowStateDashboard() {
         setFocusHours(0.0);
       }
     } catch (err) {
-      console.error("Error fetching streak and focus hours:", err);
+      console.warn("Notice: Focus sessions remote fetch failed, falling back to local cache:", err);
+      if (typeof window !== "undefined") {
+        const cached = localStorage.getItem("flowstate_cached_focus_sessions");
+        if (cached) {
+          try {
+            const parsed = JSON.parse(cached);
+            const activeDatesSet = new Set<string>();
+            let todayMins = 0;
+            const todayStr = new Date().toISOString().split("T")[0];
+            parsed.forEach((s: { duration_minutes?: number; created_at?: string }) => {
+              if (s.created_at) {
+                const dateObj = new Date(s.created_at);
+                const dateStr = dateObj.toISOString().split("T")[0];
+                activeDatesSet.add(dateStr);
+                if (dateStr === todayStr) {
+                  todayMins += s.duration_minutes || 25;
+                }
+              }
+            });
+            setStreakDays(activeDatesSet.size);
+            setFocusHours(Number((todayMins / 60).toFixed(1)));
+          } catch {
+            // retain existing
+          }
+        }
+      }
+    } finally {
+      setStatsLoading(false);
     }
   };
 
@@ -104,7 +140,13 @@ export default function FlowStateDashboard() {
         .select("*")
         .order("created_at", { ascending: false });
 
-      if (!error && data) {
+      if (error) throw error;
+
+      if (data) {
+        if (typeof window !== "undefined") {
+          localStorage.setItem("flowstate_cached_tasks", JSON.stringify(data));
+        }
+
         const formattedTasks = data.map((t) => {
           const savedTime = localStorage.getItem(`task_timer_${t.id}`);
           const savedEnd = localStorage.getItem(`task_timer_end_${t.id}`);
@@ -127,7 +169,18 @@ export default function FlowStateDashboard() {
         setTasks(formattedTasks);
       }
     } catch (err) {
-      console.error("Error fetching tasks for dashboard:", err);
+      console.warn("Notice: Tasks remote fetch failed, falling back to local cache:", err);
+      if (typeof window !== "undefined") {
+        const cached = localStorage.getItem("flowstate_cached_tasks");
+        if (cached) {
+          try {
+            const parsed = JSON.parse(cached);
+            setTasks(parsed);
+          } catch {
+            // retain existing
+          }
+        }
+      }
     }
   };
 
@@ -279,6 +332,7 @@ export default function FlowStateDashboard() {
                     completedTasks={completedCount}
                     totalTasks={tasks.length}
                     dailyGoalHours={Number(dailyGoal)}
+                    loading={statsLoading}
                   />
                 </motion.section>
 
