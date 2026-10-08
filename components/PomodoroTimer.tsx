@@ -312,6 +312,21 @@ export function PomodoroTimer({
       setTimerTime(formatTime(timeToUse));
     }
   };
+  // Listen for external start trigger (e.g. from AI Discipline Coach or Streak Rebuild Modal)
+  const toggleTimerRef = useRef(toggleTimer);
+  toggleTimerRef.current = toggleTimer;
+  useEffect(() => {
+    const handleExternalStart = () => {
+      const savedRunning = localStorage.getItem(STORAGE_KEY_RUNNING) === "true";
+      if (!savedRunning) {
+        toggleTimerRef.current();
+      }
+    };
+    window.addEventListener("flowstate_start_timer", handleExternalStart);
+    return () => {
+      window.removeEventListener("flowstate_start_timer", handleExternalStart);
+    };
+  }, []);
 
   // State-protected mode change: prevents accidental resets while active
   const applyModeChange = (newMode: TimerMode) => {

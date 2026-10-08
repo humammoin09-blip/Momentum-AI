@@ -9,6 +9,10 @@ import { PomodoroTimer } from "@/components/PomodoroTimer";
 import TaskList, { Task } from "@/components/TaskList";
 import { ConsistencyHeatmap } from "@/components/ConsistencyHeatmap";
 import { ProfileModal } from "@/components/ProfileModal";
+import { AIDisciplineCoach } from "@/components/AIDisciplineCoach";
+import { StreakLossModal } from "@/components/StreakLossModal";
+import { evaluateStreakStatus, calculateConsistencyAnalytics } from "@/lib/discipline-service";
+import { checkAndSendEveningStreakAlert } from "@/lib/streak-protection";
 import { Sparkles, Flame, Zap, Shield, ArrowRight, BarChart3, Timer, CheckSquare } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 
@@ -18,6 +22,10 @@ export default function FlowStateDashboard() {
   const [timerTime, setTimerTime] = useState<string>("25:00");
   const [focusHours, setFocusHours] = useState<number>(0.0);
   const [streakDays, setStreakDays] = useState<number>(0);
+
+  // Streak Loss Modal & Psychological Alert State
+  const [streakLossModalOpen, setStreakLossModalOpen] = useState<boolean>(false);
+  const [previousBrokenStreak, setPreviousBrokenStreak] = useState<number>(0);
 
   // Profile Customization States
   const [userName, setUserName] = useState<string>("Alex Vance");
@@ -37,6 +45,18 @@ export default function FlowStateDashboard() {
       if (savedTitle) setUserTitle(savedTitle);
       if (savedGoal) setDailyGoal(parseFloat(savedGoal));
       if (savedAvatar) setUserAvatar(savedAvatar);
+
+      const cachedSessions = localStorage.getItem("flowstate_cached_focus_sessions");
+      if (cachedSessions) {
+        try {
+          const parsed = JSON.parse(cachedSessions);
+          const analytics = calculateConsistencyAnalytics(parsed);
+          setFocusHours(analytics.todayHours);
+          setStreakDays(analytics.streakDays);
+        } catch {
+          // ignore
+        }
+      }
     }
   }, []);
 
@@ -57,24 +77,31 @@ export default function FlowStateDashboard() {
           localStorage.setItem("flowstate_cached_focus_sessions", JSON.stringify(sessions));
         }
 
-        const activeDatesSet = new Set<string>();
-        let todayMins = 0;
-        const todayStr = new Date().toISOString().split("T")[0];
+        const analytics = calculateConsistencyAnalytics(sessions);
+        setStreakDays(analytics.streakDays);
+        setFocusHours(analytics.todayHours);
 
-        sessions.forEach((s) => {
-          if (s.created_at) {
-            const dateObj = new Date(s.created_at);
-            const dateStr = dateObj.toISOString().split("T")[0];
-            activeDatesSet.add(dateStr);
+        // Smart Streak Break Check
+        const streakEval = evaluateStreakStatus(sessions);
+        if (streakEval.isStreakBroken) {
+          setPreviousBrokenStreak(streakEval.previousStreak);
+          setStreakLossModalOpen(true);
+        }
 
-            if (dateStr === todayStr) {
-              todayMins += s.duration_minutes || 25;
-            }
-          }
+        // Cache last active date and streak
+        if (typeof window !== "undefined" && analytics.streakDays > 0) {
+          const now = new Date();
+          const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+          localStorage.setItem("flowstate_saved_streak", String(analytics.streakDays));
+          localStorage.setItem("flowstate_last_active_date", todayStr);
+        }
+
+        // Smart Streak Protection Check
+        checkAndSendEveningStreakAlert({
+          focusHours: analytics.todayHours,
+          streakDays: analytics.streakDays,
+          dailyGoal: Number(dailyGoal),
         });
-
-        setStreakDays(activeDatesSet.size);
-        setFocusHours(Number((todayMins / 60).toFixed(1)));
       } else {
         setStreakDays(0);
         setFocusHours(0.0);
@@ -86,21 +113,15 @@ export default function FlowStateDashboard() {
         if (cached) {
           try {
             const parsed = JSON.parse(cached);
-            const activeDatesSet = new Set<string>();
-            let todayMins = 0;
-            const todayStr = new Date().toISOString().split("T")[0];
-            parsed.forEach((s: { duration_minutes?: number; created_at?: string }) => {
-              if (s.created_at) {
-                const dateObj = new Date(s.created_at);
-                const dateStr = dateObj.toISOString().split("T")[0];
-                activeDatesSet.add(dateStr);
-                if (dateStr === todayStr) {
-                  todayMins += s.duration_minutes || 25;
-                }
-              }
-            });
-            setStreakDays(activeDatesSet.size);
-            setFocusHours(Number((todayMins / 60).toFixed(1)));
+            const analytics = calculateConsistencyAnalytics(parsed);
+            setStreakDays(analytics.streakDays);
+            setFocusHours(analytics.todayHours);
+
+            const streakEval = evaluateStreakStatus(parsed);
+            if (streakEval.isStreakBroken) {
+              setPreviousBrokenStreak(streakEval.previousStreak);
+              setStreakLossModalOpen(true);
+            }
           } catch {
             // retain existing
           }
@@ -110,6 +131,25 @@ export default function FlowStateDashboard() {
       setStatsLoading(false);
     }
   };
+
+  // Periodic evening streak protection alert monitor (checks every 60s & on focus)
+  useEffect(() => {
+    const runProtectionCheck = () => {
+      checkAndSendEveningStreakAlert({
+        focusHours,
+        streakDays,
+        dailyGoal: Number(dailyGoal),
+      });
+    };
+
+    runProtectionCheck();
+    const interval = setInterval(runProtectionCheck, 60000);
+    window.addEventListener("focus", runProtectionCheck);
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener("focus", runProtectionCheck);
+    };
+  }, [focusHours, streakDays, dailyGoal]);
 
   useEffect(() => {
     fetchAnalyticsAndStreak();
@@ -336,6 +376,24 @@ export default function FlowStateDashboard() {
                   />
                 </motion.section>
 
+                {/* AI DISCIPLINE COACH & REALITY CHECK WIDGET */}
+                <motion.section variants={itemVariants}>
+                  <AIDisciplineCoach
+                    focusHours={focusHours}
+                    dailyGoal={Number(dailyGoal)}
+                    streakDays={streakDays}
+                    completedTasks={completedCount}
+                    totalTasks={tasks.length}
+                    userName={userName}
+                    onStartFocusSession={() => {
+                      if (typeof window !== "undefined") {
+                        window.dispatchEvent(new CustomEvent("flowstate_start_timer"));
+                      }
+                    }}
+                    onOpenStreakLossModal={() => setStreakLossModalOpen(true)}
+                  />
+                </motion.section>
+
                 {/* MIDDLE SECTION: Split Layout (Pomodoro Timer Left, Daily MITs Right) */}
                 <motion.section
                   variants={itemVariants}
@@ -436,6 +494,28 @@ export default function FlowStateDashboard() {
         setDailyGoal={(goal: string) => setDailyGoal(parseFloat(goal))}
         userAvatar={userAvatar}
         setUserAvatar={setUserAvatar}
+      />
+
+      {/* Streak Loss Psychological Quote & Alert Modal */}
+      <StreakLossModal
+        isOpen={streakLossModalOpen}
+        onClose={() => {
+          setStreakLossModalOpen(false);
+          if (typeof window !== "undefined") {
+            const todayStr = new Date().toISOString().split("T")[0];
+            localStorage.setItem("flowstate_streak_modal_dismissed_date", todayStr);
+          }
+        }}
+        previousStreak={previousBrokenStreak}
+        userName={userName}
+        onRebuildStreak={() => {
+          setStreakLossModalOpen(false);
+          if (typeof window !== "undefined") {
+            const todayStr = new Date().toISOString().split("T")[0];
+            localStorage.setItem("flowstate_streak_modal_dismissed_date", todayStr);
+            window.dispatchEvent(new CustomEvent("flowstate_start_timer"));
+          }
+        }}
       />
     </div>
   );
